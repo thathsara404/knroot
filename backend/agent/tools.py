@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from langchain_core.tools import tool
 
 from backend.api.news.service import get_news

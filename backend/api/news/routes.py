@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from flask import Blueprint, jsonify, request
 
 from backend.api.news.feeds import NEWS_FEEDS

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import os
 from pathlib import Path
@@ -5,7 +7,6 @@ from pathlib import Path
 from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
 from psycopg.errors import UniqueViolation
-from langgraph.checkpoint.postgres import PostgresSaver
 
 logger = logging.getLogger(__name__)
 
@@ -51,40 +52,52 @@ def execute_returning(sql: str, params: tuple = ()) -> dict:
         return result.fetchone()
 
 
+_MIGRATION_LOCK_ID = 7438291874  # stable bigint for pg_advisory_lock
+
+
 def run_migrations() -> None:
     migrations_dir = Path(__file__).parent.parent / "migrations"
     sql_files = sorted(migrations_dir.glob("*.sql"))
 
     with get_pool().connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                filename VARCHAR(255) PRIMARY KEY,
-                applied_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
+        # Serialize across Gunicorn workers: only one runs migrations at a time
+        conn.execute("SELECT pg_advisory_lock(%s)", (_MIGRATION_LOCK_ID,))
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    filename VARCHAR(255) PRIMARY KEY,
+                    applied_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
 
-        for sql_file in sql_files:
-            already_applied = conn.execute(
-                "SELECT 1 FROM schema_migrations WHERE filename = %s",
-                (sql_file.name,),
-            ).fetchone()
+            for sql_file in sql_files:
+                already_applied = conn.execute(
+                    "SELECT 1 FROM schema_migrations WHERE filename = %s",
+                    (sql_file.name,),
+                ).fetchone()
 
-            if already_applied:
-                continue
+                if already_applied:
+                    continue
 
-            logger.info("Applying migration: %s", sql_file.name)
-            conn.execute(sql_file.read_text())
-            conn.execute(
-                "INSERT INTO schema_migrations (filename) VALUES (%s)",
-                (sql_file.name,),
-            )
-            logger.info("Migration applied: %s", sql_file.name)
+                logger.info("Applying migration: %s", sql_file.name)
+                conn.execute(sql_file.read_text())
+                conn.execute(
+                    "INSERT INTO schema_migrations (filename) VALUES (%s)",
+                    (sql_file.name,),
+                )
+                logger.info("Migration applied: %s", sql_file.name)
+        finally:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (_MIGRATION_LOCK_ID,))
 
 
 def setup_langgraph_checkpointer() -> None:
+    from langgraph.checkpoint.postgres import PostgresSaver
     with get_pool().connection() as conn:
+        conn.execute("SELECT pg_advisory_lock(%s)", (_MIGRATION_LOCK_ID,))
         try:
             PostgresSaver(conn).setup()
             logger.info("LangGraph checkpointer tables ready")
         except UniqueViolation:
             logger.info("LangGraph checkpointer tables already initialised")
+        finally:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (_MIGRATION_LOCK_ID,))

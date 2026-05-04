@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 import re
-from typing import Annotated
+try:
+    from typing import Annotated
+except ImportError:
+    from typing_extensions import Annotated  # type: ignore[assignment]
 from typing_extensions import TypedDict
 
 from langchain_core.messages import BaseMessage, SystemMessage

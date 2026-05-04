@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import os
 
@@ -43,12 +45,17 @@ def create_app(config_name: str | None = None) -> Flask:
         from backend.core.scheduler import init_scheduler
         init_scheduler(redis)
 
+    if not app.config.get('SECRET_KEY'):
+        raise RuntimeError('JWT_SECRET_KEY environment variable is not set')
+
     # Blueprints
     from backend.api.health.routes import bp as health_bp
+    from backend.api.auth.routes import bp as auth_bp
     from backend.api.news.routes import bp as news_bp
     from backend.api.chat.routes import bp as chat_bp
 
     app.register_blueprint(health_bp)
+    app.register_blueprint(auth_bp)
     app.register_blueprint(news_bp)
     app.register_blueprint(chat_bp)
 

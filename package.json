@@ -1,38 +1,41 @@
 {
   "name": "knowledge-root",
   "private": true,
-  "description": "Knowledge Root (knroot.com) — monorepo root. All dev, test, and Docker commands in one place. Delegates to Makefile.",
+  "description": "Knowledge Root (knroot.com) — monorepo root scripts. No make required.",
   "scripts": {
-    "help": "make help",
+    "_venv":      "[ -f $HOME/.venvs/knroot/bin/pip ] || (rm -rf $HOME/.venvs/knroot && python3 -m venv $HOME/.venvs/knroot && $HOME/.venvs/knroot/bin/python3 -m ensurepip --upgrade); $HOME/.venvs/knroot/bin/pip install -q -r requirements-dev.txt",
+    "_venv-unit": "[ -f $HOME/.venvs/knroot/bin/pip ] || (rm -rf $HOME/.venvs/knroot && python3 -m venv $HOME/.venvs/knroot && $HOME/.venvs/knroot/bin/python3 -m ensurepip --upgrade); $HOME/.venvs/knroot/bin/pip install -q -r requirements-unit.txt",
+    "clean:venv": "rm -rf $HOME/.venvs/knroot",
+    "_npmfe":     "[ -d frontend/node_modules ] || npm install --prefix frontend",
 
-    "--docker--": "# ── Docker (full stack) ─────────────────────────────────────────",
-    "up":          "make up",
-    "down":        "make down",
-    "build":       "make build",
-    "restart":     "make restart",
-    "logs":        "make logs",
+    "pretest:backend:unit": "npm run _venv-unit",
+    "pretest:backend:int":  "npm run _venv",
+    "pretest:frontend":     "npm run _npmfe",
+    "prestart:backend":     "npm run _venv",
+    "prestart:frontend":    "npm run _npmfe",
 
-    "--infra--": "# ── Infra only (DB + Redis for local dev) ───────────────────────",
-    "up:infra":    "make up-infra",
+    "up":      "docker compose up --build -d",
+    "down":    "docker compose down",
+    "build":   "docker compose build --no-cache",
+    "restart": "docker compose down && docker compose up --build -d",
+    "logs":    "docker compose logs -f",
 
-    "--dev--": "# ── Local dev servers ──────────────────────────────────────────────",
-    "start:backend":   "make start-backend",
-    "start:frontend":  "make start-frontend",
+    "up:infra": "docker compose up db redis -d",
 
-    "--tests--": "# ── Tests ──────────────────────────────────────────────────────────",
-    "test":                  "make test",
-    "test:backend:unit":     "make test-backend-unit",
-    "test:backend:int":      "make test-backend-int",
-    "test:frontend":         "make test-frontend",
-    "test:e2e":              "make test-e2e",
+    "start:backend":  "FLASK_ENV=development $HOME/.venvs/knroot/bin/flask --app wsgi:app run --debug --port 5000",
+    "start:frontend": "npm run dev --prefix frontend",
 
-    "--lint--": "# ── Lint ────────────────────────────────────────────────────────────",
-    "lint":            "make lint",
-    "lint:backend":    "make lint-backend",
-    "lint:frontend":   "make lint-frontend",
+    "test:backend:unit": "$HOME/.venvs/knroot/bin/pytest tests/unit/ -v --cov=backend --cov-config=.coveragerc-unit --cov-report=term-missing --cov-fail-under=90",
+    "test:backend:int":  "$HOME/.venvs/knroot/bin/pytest tests/integration/ -v --cov=backend --cov-append --cov-report=term-missing --cov-fail-under=80",
+    "test:frontend":     "npm run test:unit --prefix frontend",
+    "test:e2e":          "npx playwright test --config=e2e/playwright.config.ts",
+    "test":              "npm run test:backend:unit && npm run test:backend:int && npm run test:frontend",
 
-    "--utils--": "# ── Utils ───────────────────────────────────────────────────────────",
-    "db:shell":    "make db-shell",
-    "redis:shell": "make redis-shell"
+    "lint:backend":  "$HOME/.venvs/knroot/bin/flake8 backend/ wsgi.py --max-line-length=100 && $HOME/.venvs/knroot/bin/mypy backend/ wsgi.py --ignore-missing-imports",
+    "lint:frontend": "npm run lint --prefix frontend && npm run typecheck --prefix frontend",
+    "lint":          "npm run lint:backend && npm run lint:frontend",
+
+    "db:shell":    "docker compose exec db psql -U postgres -d postgres",
+    "redis:shell": "docker compose exec redis redis-cli"
   }
 }

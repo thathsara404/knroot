@@ -1,0 +1,12 @@
+[run]
+omit =
+    backend/agent/graph.py
+    backend/agent/tools.py
+    backend/api/chat/*
+    backend/api/discuss/*
+    backend/api/health/*
+    backend/api/news/*
+    backend/api/quiz/*
+    backend/api/sessions/*
+    backend/core/db.py
+    backend/core/scheduler.py

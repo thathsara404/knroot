@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 
 from backend.api.news.cache import fetch_and_cache, get_cached

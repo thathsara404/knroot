@@ -5,6 +5,7 @@ class Config:
     SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
     DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@db:5432/postgres")
     REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+    RATELIMIT_STORAGE_URI = os.getenv("REDIS_URL", "redis://redis:6379/0")
     CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
     JWT_ACCESS_EXPIRES_MINUTES = int(os.getenv("JWT_ACCESS_EXPIRES_MINUTES", "15"))
     JWT_REFRESH_EXPIRES_DAYS = int(os.getenv("JWT_REFRESH_EXPIRES_DAYS", "7"))
@@ -26,6 +27,7 @@ class TestingConfig(Config):
     TESTING = True
     DATABASE_URL = os.getenv("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/testdb")
     REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/1")
+    RATELIMIT_STORAGE_URI = "memory://"
 
 
 config_map = {

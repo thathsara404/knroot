@@ -435,36 +435,184 @@ def test_access_other_users_session_returns_403(auth_client, other_user_session_
 5. Button transitions: `idle → loading → opened` (disabled after open, shows ✓).
 
 ### Running tests locally
-Use the Makefile at the repo root — it is the single source of truth for all test commands:
+Use the npm scripts at the repo root — the single source of truth for all test commands:
 
 ```bash
-# Infrastructure
-make up-infra             # start DB + Redis only (for local dev)
-make up                   # start full Docker stack (db, redis, web, frontend)
-make down                 # stop all containers
-make logs                 # tail all container logs
-
-# Local dev servers (after make up-infra)
-make start-backend        # Flask debug server on :5000
-make start-frontend       # Vite dev server on :5173
-
 # Tests
-make test-backend-unit    # pytest tests/unit/  — no DB, fakeredis
-make test-backend-int     # pytest tests/integration/
-make test-frontend        # Vitest + RTL
-make test-e2e             # Playwright (full stack must be up)
-make test                 # unit + integration + frontend combined
+npm run test:backend:unit     # pytest tests/unit/  — no DB, fakeredis (Python venv at $HOME/.venvs/knroot)
+npm run test:backend:int      # pytest tests/integration/
+npm run test:frontend         # Vitest + RTL
+npm run test:e2e              # Playwright (full stack must be up)
 
-# Lint
-make lint-backend         # flake8 + mypy
-make lint-frontend        # eslint + tsc
-make lint                 # both
-
-# Utils
-make db-shell             # psql into DB container
-make redis-shell          # redis-cli into Redis container
+# Local dev
+npm run start:backend         # Flask debug server on :5000
+npm run start:frontend        # Vite dev server on :5173
 ```
 
-All the same commands are available as `npm run <script>` from the repo root (root `package.json` delegates to the Makefile). Use whichever is more convenient.
+**Never invoke `pytest` or `npx vitest` directly** — always use the npm script so the venv and env vars are set up correctly.
 
-Never invoke `pytest` or `npx vitest` directly in agent instructions — always reference the Makefile target so commands stay in sync if they change.
+---
+
+## KNOWN PITFALLS & HARD-WON LESSONS
+
+### Flask Test Client: Cookie Injection (CRITICAL)
+**Never** use `headers={'Cookie': 'key=val'}` or `environ_base={'HTTP_COOKIE': ...}` to inject cookies in Flask tests. In Werkzeug 3.x the cookie jar's `inject_wsgi` can overwrite `HTTP_COOKIE` after those are applied.
+
+**Always** use the client's cookie API:
+```python
+# CORRECT
+client.set_cookie('refresh_token', token)  # path defaults to '/', sent everywhere
+resp = client.post('/auth/refresh')
+
+# WRONG — unreliable in Werkzeug 3.x
+resp = client.post('/auth/refresh', headers={'Cookie': f'refresh_token={token}'})
+resp = client.post('/auth/refresh', environ_base={'HTTP_COOKIE': f'refresh_token={token}'})
+```
+
+### Rate Limit Isolation Between Tests
+When using in-memory rate limiting (`RATELIMIT_STORAGE_URI = "memory://"`), counters persist across tests unless explicitly reset. Add this autouse fixture to `tests/conftest.py`:
+```python
+@pytest.fixture(autouse=True)
+def reset_rate_limits(app):
+    yield
+    try:
+        from backend.extensions import limiter
+        limiter._storage.reset()
+    except Exception:
+        pass
+```
+The `TestingConfig` must set `RATELIMIT_STORAGE_URI = "memory://"` — never point tests at a real Redis for rate limiting.
+
+### Flask-Limiter RateLimitExceeded → Must Be Registered Separately
+`RateLimitExceeded` is NOT a subclass of `AppError`. Without an explicit handler it falls through to the generic 500 handler. Always register it first in `register_error_handlers`:
+```python
+def register_error_handlers(app):
+    from flask_limiter.errors import RateLimitExceeded
+
+    @app.errorhandler(RateLimitExceeded)
+    def handle_rate_limit(exc):
+        return jsonify({"error": "Too many requests", "detail": str(exc.description)}), 429
+    ...
+```
+
+### Python 3.8 Compatibility
+- Add `from __future__ import annotations` as the **first line** of every backend `.py` file. This makes `X | Y` union type annotations lazy strings, avoiding `TypeError` on Python 3.8 at import time.
+- `typing.Annotated` only exists on Python 3.9+. Use a try/except shim:
+  ```python
+  try:
+      from typing import Annotated
+  except ImportError:
+      from typing_extensions import Annotated
+  ```
+- When unit-testing on Python 3.8, stub Python 3.9+ packages (`langgraph`, `langchain_core`, etc.) via `sys.modules.setdefault(mod, MagicMock())` at the very top of `conftest.py`, before any backend import. Every submodule path must be listed explicitly — stubbing the top-level package does NOT auto-stub `langgraph.graph`, `langgraph.graph.message`, etc.
+
+### VirtualBox Shared Folder (vboxsf) — venv Must Live in Native FS
+`vboxsf` does not support symlinks. Python venv creates a `lib64 → lib` symlink that always fails on shared folders regardless of `--copies`. Always create the venv at `$HOME/.venvs/knroot` (native Linux filesystem). Ubuntu 20.04 disables `ensurepip` in venv by default — after creation, run `python3 -m ensurepip --upgrade` explicitly.
+
+### Gunicorn Multi-Worker Migration Race Condition
+Multiple Gunicorn workers can run `run_migrations()` simultaneously. Wrap the entire migration sequence in a PostgreSQL advisory lock:
+```python
+_MIGRATION_LOCK_ID = 7438291874
+with get_pool().connection() as conn:
+    conn.execute("SELECT pg_advisory_lock(%s)", (_MIGRATION_LOCK_ID,))
+    try:
+        ...  # all migration steps
+    finally:
+        conn.execute("SELECT pg_advisory_unlock(%s)", (_MIGRATION_LOCK_ID,))
+```
+Apply the same lock in `setup_langgraph_checkpointer()`.
+
+---
+
+## FRONTEND UI/UX STANDARDS
+
+### User Feedback — Every Async Operation Needs All Three States
+Every action that touches the network must have explicit loading, success, and error states. No silent failures.
+
+```tsx
+// CORRECT — all states handled
+function LoginForm() {
+  const { signIn, isLoading, error } = useAuth()
+  return (
+    <form onSubmit={handleSubmit}>
+      {error && <ErrorBanner message={error} />}
+      <Button type="submit" disabled={isLoading}>
+        {isLoading ? <Spinner size="sm" /> : 'Sign in'}
+      </Button>
+    </form>
+  )
+}
+
+// WRONG — no feedback during loading
+function LoginForm() {
+  return <form onSubmit={handleSubmit}><button>Sign in</button></form>
+}
+```
+
+### Form Error Display
+- Field-level errors appear **below** the relevant input, in red, with `role="alert"` for screen readers.
+- Form-level errors (e.g. "Invalid credentials") appear in a banner above the submit button.
+- Clear field errors on change (as user corrects them), not on blur.
+- Never display raw API error strings to users — map them to friendly messages.
+
+```tsx
+// Field error pattern
+<input
+  id="email"
+  aria-describedby={errors.email ? 'email-error' : undefined}
+  aria-invalid={!!errors.email}
+  className={errors.email ? 'border-red-500' : 'border-gray-300'}
+/>
+{errors.email && (
+  <p id="email-error" role="alert" className="text-sm text-red-600 mt-1">
+    {errors.email}
+  </p>
+)}
+```
+
+### Empty States
+Every list or content area must render a meaningful empty state — never a blank screen.
+```tsx
+{sessions.length === 0 && (
+  <div className="text-center py-12 text-gray-500">
+    <ChatBubbleIcon className="mx-auto mb-3 h-10 w-10 opacity-40" />
+    <p className="font-medium">No conversations yet</p>
+    <p className="text-sm mt-1">Start a new chat to get started.</p>
+  </div>
+)}
+```
+
+### Loading Skeletons, Not Spinners for Content Areas
+Use skeleton placeholders for content areas that are loading (news cards, session list, messages). Reserve spinners for buttons and small inline actions only.
+
+### Optimistic Updates for Simple Mutations
+For actions that rarely fail (delete, rename, toggle), update the UI immediately and roll back on error. Use React Query's `onMutate`/`onError`/`onSettled` pattern.
+
+### Accessible Interactive Elements
+- Every `<button>` must have a visible label or `aria-label`.
+- Modals/dialogs must trap focus and close on Escape.
+- Color contrast ≥ 4.5:1 for body text, ≥ 3:1 for large text.
+- Never use color alone to convey state — pair with icon or text.
+
+### Responsive Layout Breakpoints
+The app uses a three-pane layout (sidebar | main | detail). On mobile (<768px):
+- Sidebar collapses to a slide-over drawer (hamburger icon).
+- Detail pane stacks below main.
+Use Tailwind's `md:` prefix as the primary breakpoint. Never use pixel media queries in JSX.
+
+### Keyboard Navigation
+- Tab order must follow visual reading order.
+- The "Learn More" topic chips must be keyboard-focusable and triggerable via Enter/Space.
+- The chat message input must auto-focus when a session is opened.
+
+### Copy and Microcopy
+- Button labels: imperative verbs ("Start Learning", "Send", "Try Again") — never "OK" or "Submit".
+- Error messages: explain what went wrong AND what to do ("Password must be at least 8 characters. Try a longer passphrase.").
+- Loading messages: specific ("Generating quiz…", "Fetching latest news…") — never generic "Loading…".
+- Destructive actions: require a confirmation click (not just a dialog) with the action's consequence stated ("Delete this conversation? This cannot be undone.").
+
+### Animation and Motion
+- Prefer CSS transitions over JS animations.
+- Page transitions: `opacity` fade 150ms — no slide animations (disorienting).
+- Skeleton shimmer: CSS `@keyframes` — never `setInterval`.
+- Respect `prefers-reduced-motion`: wrap all non-essential animations in a media query check.

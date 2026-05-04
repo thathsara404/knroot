@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 NEWS_FEEDS: dict[str, list[tuple[str, str]]] = {
     "ai": [
         ("ArXiv AI",         "https://arxiv.org/rss/cs.AI"),

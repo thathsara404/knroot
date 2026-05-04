@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from flask import Blueprint, g, jsonify, request
 
 from backend.api.chat.service import auto_title_session, get_or_create_session, send_message
