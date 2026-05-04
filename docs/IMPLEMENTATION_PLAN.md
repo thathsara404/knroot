@@ -1,0 +1,1264 @@
+# Implementation Plan — Knowledge Root
+
+> Companion to `ARCHITECTURE.md`. Each phase maps to one Git branch, merged to `main` via PR after passing all automated reviews and tests.
+>
+> **Stack:** Flask (Python) · PostgreSQL · Redis · LangGraph · OpenRouter LLM · React 18 + TypeScript + Vite · Playwright E2E · pytest · Vitest
+
+---
+
+## Backend File Path Convention
+
+All Python server code lives in the `backend/` package. When this plan refers to backend files, use this mapping:
+
+| Logical name | Actual path |
+|---|---|
+| Flask app factory | `backend/app.py` |
+| Config classes | `backend/config.py` |
+| Extension singletons | `backend/extensions.py` |
+| Auth routes | `backend/api/auth/routes.py` |
+| Auth service | `backend/api/auth/service.py` |
+| Sessions routes | `backend/api/sessions/routes.py` |
+| Sessions service | `backend/api/sessions/service.py` |
+| Chat routes | `backend/api/chat/routes.py` |
+| Chat service | `backend/api/chat/service.py` |
+| News routes | `backend/api/news/routes.py` |
+| News service | `backend/api/news/service.py` |
+| News cache | `backend/api/news/cache.py` |
+| News feeds | `backend/api/news/feeds.py` |
+| Discuss routes | `backend/api/discuss/routes.py` |
+| Discuss service | `backend/api/discuss/service.py` |
+| Quiz routes | `backend/api/quiz/routes.py` |
+| Quiz service | `backend/api/quiz/service.py` |
+| MCQ generator | `backend/api/quiz/generator.py` |
+| LangGraph graph | `backend/agent/graph.py` |
+| Agent prompts | `backend/agent/prompts.py` |
+| Agent tools | `backend/agent/tools.py` |
+| Auth middleware | `backend/core/auth.py` |
+| DB helpers | `backend/core/db.py` |
+| LLM client factory | `backend/core/llm.py` |
+| Error handlers | `backend/core/errors.py` |
+| APScheduler setup | `backend/core/scheduler.py` |
+| Migrations | `backend/migrations/00N_*.sql` |
+| Gunicorn entry point | `wsgi.py` (project root) |
+| Unit tests | `tests/unit/test_*.py` (project root) |
+
+The Dockerfile runs: `gunicorn "wsgi:app" --bind 0.0.0.0:5000 --workers 4`
+
+---
+
+## Branch Strategy
+
+```
+main
+ ├── feature/auth                    Phase 1
+ ├── feature/session-management      Phase 2
+ ├── feature/smart-news-cache        Phase 3
+ ├── feature/knowledge-check         Phase 4
+ ├── feature/polish                  Phase 5
+ └── feature/news-discuss-learn      Phase 6
+```
+
+Each branch is opened as a PR against `main`. Automated GitHub Actions run on every PR open/sync:
+- `code-review.yml` — code quality + patterns
+- `security-review.yml` — OWASP + AI-specific risks
+- `architecture-review.yml` — drift from `ARCHITECTURE.md`
+- `ci.yml` — lint, unit tests, E2E smoke
+
+Merge only after all checks green and PR description references affected `PROGRESS.md` items.
+
+---
+
+## Test Strategy
+
+| Layer       | Tool                       | Location                      | When runs          |
+|-------------|----------------------------|-------------------------------|--------------------|
+| Backend unit| pytest + pytest-flask      | `tests/unit/`                 | `ci.yml` on PR     |
+| Frontend unit| Vitest + Testing Library   | `frontend/src/**/*.test.tsx`  | `ci.yml` on PR     |
+| E2E         | Playwright                 | `e2e/*.spec.ts`               | `ci.yml` on PR     |
+| Static analysis | flake8 + mypy (backend), ESLint + tsc (frontend) | inline | `ci.yml` on PR |
+
+**Backend test structure:**
+```
+tests/
+  conftest.py          ← pytest fixtures: test app, test DB, test Redis client
+  unit/
+    test_auth.py
+    test_sessions.py
+    test_news.py
+    test_quiz.py
+  integration/         ← optional, hits real DB in CI using test container
+```
+
+**Frontend test structure:**
+```
+frontend/src/
+  pages/
+    Login.test.tsx
+    Register.test.tsx
+    Quiz.test.tsx
+  components/
+    ChatSidebar.test.tsx
+    NewsPanel.test.tsx
+    MCQCard.test.tsx
+  hooks/
+    useAuth.test.ts
+    useSessions.test.ts
+    useQuiz.test.ts
+  api/
+    auth.test.ts
+```
+
+**E2E structure:**
+```
+e2e/
+  fixtures.ts          ← Playwright fixtures: logged-in page, seeded session
+  auth.spec.ts
+  sessions.spec.ts
+  news.spec.ts
+  quiz.spec.ts
+  full-flow.spec.ts    ← register → chat → quiz golden path
+```
+
+---
+
+## Phase 1 — Authentication (`feature/auth`)
+
+### Goal
+Users can register, log in, refresh their session, and log out. All existing routes are protected by JWT middleware.
+
+### New Files
+```
+backend/app.py                         ← create_app() factory
+backend/config.py                      ← Config / DevelopmentConfig / ProductionConfig / TestingConfig
+backend/extensions.py                  ← db_pool, redis_client, limiter singletons
+backend/api/__init__.py
+backend/api/auth/__init__.py
+backend/api/auth/routes.py             ← Blueprint('/auth'): register, login, refresh, logout, me
+backend/api/auth/service.py            ← register_user(), login_user(), refresh_token(), logout()
+backend/core/__init__.py
+backend/core/auth.py                   ← @require_auth decorator, g.user_id injection
+backend/core/db.py                     ← query(), query_one(), execute(), run_migrations()
+backend/core/errors.py                 ← AppError hierarchy, register_error_handlers(app)
+backend/core/llm.py                    ← build_llm_client() factory
+backend/migrations/001_users.sql       ← users table DDL
+wsgi.py                                ← from backend.app import create_app; app = create_app()
+tests/conftest.py                      ← app fixture (TestingConfig), auth helpers
+tests/unit/test_auth.py
+frontend/src/pages/LoginPage.tsx
+frontend/src/pages/RegisterPage.tsx
+frontend/src/components/ProtectedRoute.tsx
+frontend/src/store/authStore.ts        ← Zustand: accessToken, user profile
+frontend/src/api/auth.ts               ← register/login/refresh/logout/me API calls
+frontend/src/hooks/useAuth.ts
+frontend/src/pages/LoginPage.test.tsx
+frontend/src/pages/RegisterPage.test.tsx
+frontend/src/hooks/useAuth.test.ts
+e2e/auth.spec.ts
+```
+
+### Modified Files
+```
+requirements.txt       ← add PyJWT, bcrypt, flask-limiter
+docker-compose.yml     ← add JWT_SECRET_KEY env var; Dockerfile CMD → gunicorn wsgi:app
+Dockerfile             ← update CMD to: gunicorn wsgi:app --bind 0.0.0.0:5000 --workers 4
+frontend/src/App.tsx   ← wrap routes with ProtectedRoute, add /login, /register
+frontend/src/api/client.ts ← attach Authorization header, intercept 401 → refresh
+```
+
+### Backend Tasks
+
+#### 1.1 DB Migration — `migrations/001_users.sql`
+```sql
+CREATE TABLE users (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username      VARCHAR(50)  UNIQUE NOT NULL,
+    email         VARCHAR(255) UNIQUE NOT NULL,
+    phone         VARCHAR(20),
+    full_name     VARCHAR(100) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at    TIMESTAMPTZ  DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ  DEFAULT NOW()
+);
+CREATE INDEX idx_users_email    ON users(email);
+CREATE INDEX idx_users_username ON users(username);
+```
+Run migration in `app.py` startup (same pattern as `PostgresSaver.setup()`).
+
+#### 1.2 `backend/api/auth/service.py` — Business Logic + `routes.py` — Endpoints
+
+**`POST /auth/register`**
+- Validate: username (3–50, `^[a-zA-Z0-9_]+$`), email (RFC 5322), phone (E.164 optional), full_name (1–100), password (≥ 8 chars, ≥ 1 digit, ≥ 1 letter).
+- Check unique username and email — return `409` on conflict with field-specific message.
+- `bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12))`.
+- Insert into `users`. Return `201` with profile (no hash).
+
+**`POST /auth/login`**
+- Accept `identifier` (username OR email) + `password`.
+- Look up by username; if not found, try email.
+- `bcrypt.checkpw()` — constant-time comparison.
+- On success: issue access token (JWT, `sub=user_id`, `exp=now+15m`) and refresh token (JWT, `sub=user_id`, `jti=uuid`, `exp=now+7d`).
+- Store refresh token `jti` in Redis key `refresh:{jti}` with 7-day TTL.
+- Return access token in JSON; set refresh token in `HttpOnly; SameSite=Strict; Path=/auth/refresh` cookie.
+
+**`POST /auth/refresh`**
+- Read refresh JWT from cookie.
+- Verify signature and expiry.
+- Check `redis.exists(f"refresh:{jti}")` — if missing, token was already rotated or revoked; return `401`.
+- Delete old `refresh:{jti}` from Redis (rotation).
+- Issue new access token + new refresh token (new `jti`). Store new `jti` in Redis.
+
+**`POST /auth/logout`** (requires auth)
+- Delete `refresh:{jti}` from Redis.
+- Clear the refresh cookie.
+
+**`GET /auth/me`** (requires auth)
+- Return user profile from `g.user_id`.
+
+#### 1.3 `backend/core/auth.py`
+```python
+def require_auth(f):
+    # Decode Authorization: Bearer <token>
+    # On valid token: g.user_id = payload['sub']
+    # On invalid/missing: raise UnauthorizedError (registered_error_handlers converts to 401)
+```
+Rate limit `/auth/login` and `/auth/register` via `limiter` from `backend/extensions.py`.
+
+### Frontend Tasks
+
+#### 1.4 Routes
+Add React Router. Route map:
+```
+/              → redirect based on auth state
+/login         → <Login />
+/register      → <Register />
+/app           → <ProtectedRoute><App /></ProtectedRoute>
+```
+
+#### 1.5 `authStore.ts` (Zustand)
+```ts
+interface AuthState {
+  accessToken: string | null
+  user: UserProfile | null
+  setTokens(access: string, user: UserProfile): void
+  clearAuth(): void
+}
+```
+Persist `accessToken` to `sessionStorage` (not `localStorage` — clears on tab close).
+
+#### 1.6 `api/client.ts` Interceptors
+- Attach `Authorization: Bearer <token>` to every request.
+- On `401`: call `POST /auth/refresh` once, update store, retry original request.
+- On second `401`: clear auth, redirect to `/login`.
+
+#### 1.7 Login Page
+Fields: identifier (label: "Username or Email"), password.
+On success: store token, navigate to `/app`.
+Show field-level errors from API.
+
+#### 1.8 Register Page
+Fields: full_name, username, email, phone (optional), password, confirm_password.
+Client-side validation before submit (match password, regex checks).
+On success: auto-login (store token from register response), navigate to `/app`.
+
+### Unit Tests
+
+#### Backend — `tests/unit/test_auth.py`
+```python
+# Fixtures in conftest.py:
+#   app_client: Flask test client with in-memory/test-DB
+#   valid_user_payload: dict with all required fields
+
+def test_register_success(app_client, valid_user_payload): ...
+def test_register_duplicate_username_returns_409(app_client, valid_user_payload): ...
+def test_register_duplicate_email_returns_409(app_client, valid_user_payload): ...
+def test_register_weak_password_returns_422(app_client): ...
+def test_register_invalid_email_returns_422(app_client): ...
+def test_login_success_returns_access_token(app_client, seeded_user): ...
+def test_login_by_email_succeeds(app_client, seeded_user): ...
+def test_login_wrong_password_returns_401(app_client, seeded_user): ...
+def test_login_unknown_user_returns_401(app_client): ...
+def test_refresh_issues_new_token(app_client, logged_in_client): ...
+def test_refresh_with_rotated_token_returns_401(app_client, logged_in_client): ...
+def test_logout_invalidates_refresh_token(app_client, logged_in_client): ...
+def test_protected_route_without_token_returns_401(app_client): ...
+def test_protected_route_with_valid_token_succeeds(app_client, logged_in_client): ...
+def test_rate_limit_on_login(app_client): ...
+```
+
+#### Frontend — `src/pages/Login.test.tsx`
+```ts
+test('renders identifier and password fields')
+test('shows validation error for empty submit')
+test('calls login API with correct payload')
+test('stores token and redirects on success')
+test('displays API error message on failure')
+test('links to register page')
+```
+
+#### Frontend — `src/pages/Register.test.tsx`
+```ts
+test('renders all required fields')
+test('validates password confirmation mismatch')
+test('validates username format')
+test('submits correct payload to register API')
+test('auto-logs in and redirects on success')
+test('shows field-level server errors')
+```
+
+#### Frontend — `src/hooks/useAuth.test.ts`
+```ts
+test('initial state has null token and user')
+test('setTokens updates store')
+test('clearAuth resets store')
+test('401 response triggers refresh then retry')
+test('failed refresh redirects to login')
+```
+
+### E2E Tests — `e2e/auth.spec.ts`
+```ts
+test('user can register with valid data')
+test('register with existing username shows error')
+test('user can log in with username')
+test('user can log in with email')
+test('wrong password shows error')
+test('logged-out user redirected from /app to /login')
+test('user can log out and cannot access /app')
+test('session persists on page reload')
+```
+
+---
+
+## Phase 2 — Session Management (`feature/session-management`)
+
+### Goal
+Authenticated users have a persistent left-pane chat history. Sessions are created, auto-titled, renamed, and deleted. The `/chat` endpoint is scoped to sessions owned by the requesting user.
+
+### New Files
+```
+backend/api/sessions/__init__.py
+backend/api/sessions/routes.py         ← Blueprint('/sessions'): CRUD + messages
+backend/api/sessions/service.py        ← create_session(), list_sessions(), rename(), delete(), get_messages()
+backend/api/chat/__init__.py
+backend/api/chat/routes.py             ← Blueprint('/chat'): POST /chat
+backend/api/chat/service.py            ← send_message(), auto_title(), extract_suggested_topics()
+backend/migrations/002_chat_sessions.sql
+tests/unit/test_sessions.py
+tests/unit/test_chat.py
+frontend/src/components/ChatSidebar.tsx
+frontend/src/components/SessionItem.tsx
+frontend/src/hooks/useSessions.ts
+frontend/src/api/sessions.ts
+frontend/src/components/ChatSidebar.test.tsx
+frontend/src/components/SessionItem.test.tsx
+frontend/src/hooks/useSessions.test.ts
+e2e/sessions.spec.ts
+```
+
+### Modified Files
+```
+backend/app.py              ← register sessions + chat blueprints
+backend/agent/graph.py      ← auto-title generation after first reply
+backend/agent/prompts.py    ← add SUGGESTED_TOPICS_PROMPT, AUTO_TITLE_PROMPT constants
+frontend/src/App.tsx        ← add ChatSidebar to left pane
+frontend/src/hooks/useChat.ts ← accept session_id, pass to API; handle suggested_topics in response
+frontend/src/types/index.ts ← add suggested_topics to ChatResponse type
+```
+
+### Backend Tasks
+
+#### 2.1 DB Migration — `migrations/002_chat_sessions.sql`
+```sql
+CREATE TABLE chat_sessions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID REFERENCES users(id) ON DELETE CASCADE,
+    thread_id       VARCHAR(255) UNIQUE NOT NULL,
+    title           VARCHAR(255),
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW(),
+    last_message_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX idx_sessions_user_last ON chat_sessions(user_id, last_message_at DESC);
+```
+
+#### 2.2 `sessions.py` Endpoints
+
+**`POST /sessions`** — creates session, returns `{id, thread_id, title: null, created_at}`.
+**`GET /sessions`** — list user's sessions ordered by `last_message_at DESC`, returns `[{id, title, last_message_at, created_at}]`.
+**`PATCH /sessions/{id}`** — rename: body `{title}`. Verify `user_id` ownership or return `403`.
+**`DELETE /sessions/{id}`** — delete session row + LangGraph checkpoint deletion. Verify ownership.
+
+#### 2.3 Update `POST /chat`
+- Require `session_id` in request body.
+- Verify `chat_sessions.user_id = g.user_id` (ownership check).
+- Use session's `thread_id` as LangGraph config key.
+- After first assistant reply: trigger auto-title if `title IS NULL`.
+- Update `last_message_at = NOW()` on each message.
+- Return `title` in response (may be newly generated).
+
+#### 2.4 Auto-Title Generation (`agent.py`)
+After first AI reply, call LLM with:
+```
+Generate a 4-6 word technical chat title. No punctuation or filler words.
+User said: "{first_user_message}"
+AI replied: "{first_100_chars_of_reply}"
+Reply ONLY with the title.
+```
+Store result in `chat_sessions.title`. If LLM call fails, fall back to first 40 chars of user message.
+
+#### 2.5 `GET /sessions/{id}/messages`
+Replay full message history from LangGraph state for the session's thread_id. Return `[{role, content, timestamp}]`.
+
+### Frontend Tasks
+
+#### 2.6 Layout Update (`App.tsx`)
+```
+┌──────────────────┬──────────────────────────┬───────────┐
+│  ChatSidebar     │   Chat (centre)           │  News     │
+│  w-60 xl:w-72    │   flex-1                 │  w-80     │
+│  border-r        │                           │  border-l │
+└──────────────────┴──────────────────────────┴───────────┘
+```
+ChatSidebar hidden on mobile (slide-in drawer on hamburger).
+
+#### 2.7 `ChatSidebar.tsx`
+- Header: "Chats" title + "New Chat" button (+ icon).
+- Groups: Today / Yesterday / This Week / Older (derive from `last_message_at`).
+- Each `SessionItem`: title (truncated 32 chars), relative time, hover reveals rename (pencil) + delete (trash) icons.
+- Active session highlighted.
+- Loading: 5 skeleton lines on first load.
+- Empty state: "No chats yet. Start a new conversation."
+
+#### 2.8 `useSessions.ts`
+Wraps React Query:
+- `sessions` list (auto-refetch on window focus).
+- `createSession()` → optimistic insert.
+- `renameSession(id, title)` → optimistic update.
+- `deleteSession(id)` → optimistic remove.
+- Exposes `activeSessionId` and `setActiveSession(id)`.
+
+### Unit Tests
+
+#### Backend — `tests/unit/test_sessions.py`
+```python
+def test_create_session_returns_201(auth_client): ...
+def test_list_sessions_returns_user_only(auth_client, other_user_client): ...
+def test_rename_session_success(auth_client, session_id): ...
+def test_rename_other_users_session_returns_403(auth_client, other_session_id): ...
+def test_delete_session_success(auth_client, session_id): ...
+def test_delete_other_users_session_returns_403(auth_client, other_session_id): ...
+def test_chat_without_session_returns_400(auth_client): ...
+def test_chat_with_valid_session_succeeds(auth_client, session_id): ...
+def test_chat_with_other_users_session_returns_403(auth_client, other_session_id): ...
+def test_auto_title_set_after_first_reply(auth_client, session_id): ...
+def test_get_messages_for_session(auth_client, session_with_messages): ...
+```
+
+#### Frontend — `src/components/ChatSidebar.test.tsx`
+```ts
+test('renders session list grouped by date')
+test('shows skeleton on loading')
+test('shows empty state when no sessions')
+test('new chat button calls createSession')
+test('clicking session sets it active')
+test('rename icon shows inline input')
+test('delete icon shows confirmation then removes session')
+test('only shows sessions for current user')
+```
+
+#### Frontend — `src/hooks/useSessions.test.ts`
+```ts
+test('fetches sessions on mount')
+test('createSession optimistically adds to list')
+test('renameSession updates title optimistically')
+test('deleteSession removes from list optimistically')
+test('active session id persists across renders')
+```
+
+### E2E Tests — `e2e/sessions.spec.ts`
+```ts
+test('new chat creates a session in the sidebar')
+test('session gets auto-title after first message')
+test('user can rename a session')
+test('user can delete a session')
+test('deleted session is no longer in sidebar')
+test('switching sessions loads correct message history')
+test('sessions from other users are not visible')
+```
+
+---
+
+## Phase 3 — Smart News Cache (`feature/smart-news-cache`)
+
+### Goal
+Replace the single in-memory 30-minute cache with a Redis-backed day/hour split cache. Older articles come from the stable day cache; current-hour articles are fetched fresh. A background job promotes hourly cache into the day cache.
+
+### New Files
+```
+backend/api/news/__init__.py
+backend/api/news/routes.py          ← Blueprint('/news'): GET /news?category=
+backend/api/news/service.py         ← get_news(category, force)
+backend/api/news/cache.py           ← Redis day/hour cache, DB fallback, promote_hour_to_day()
+backend/api/news/feeds.py           ← NEWS_FEEDS dict keyed by 'ai'|'programming'|'political'
+backend/core/scheduler.py           ← init_scheduler(app) + promote job
+backend/migrations/003_news_cache.sql
+tests/unit/test_news.py
+frontend/src/components/NewsPanel.test.tsx
+```
+
+### Modified Files
+```
+backend/app.py              ← register news blueprint, init APScheduler via core/scheduler.py
+backend/extensions.py       ← add redis_client + scheduler instances
+docker-compose.yml          ← add Redis service, REDIS_URL env var
+requirements.txt            ← add redis, APScheduler, fakeredis (test dep)
+frontend/src/components/NewsPanel.tsx ← article timestamps, per-source grouping
+frontend/src/hooks/useNews.ts         ← updated response type
+frontend/src/types/index.ts           ← NewsArticle type
+```
+
+### Backend Tasks
+
+#### 3.1 Redis Service (docker-compose.yml)
+```yaml
+redis:
+  image: redis:7-alpine
+  restart: unless-stopped
+  command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+  volumes:
+    - redisdata:/data
+```
+
+#### 3.2 DB Migration — `migrations/003_news_cache.sql`
+```sql
+CREATE TABLE news_cache (
+    cache_key  VARCHAR(20) PRIMARY KEY,
+    articles   JSONB       NOT NULL,
+    fetched_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+```
+
+#### 3.3 `cache/news.py` — Cache Algorithm
+
+```python
+DAY_TTL  = seconds_until_midnight_utc()
+HOUR_TTL = 3600
+
+def get_news() -> list[Article]:
+    today   = utc_now().strftime("%Y-%m-%d")
+    cur_hour = utc_now().strftime("%Y-%m-%d-%H")
+
+    hour_key = f"news:hour:{cur_hour}"
+    day_key  = f"news:day:{today}"
+
+    # 1. Try hour cache (Redis → DB fallback)
+    hour_articles = redis_get(hour_key) or db_get(hour_key)
+    if hour_articles is None:
+        hour_articles = fetch_from_rss(since=start_of_current_hour())
+        redis_set(hour_key, hour_articles, ex=HOUR_TTL)
+        db_upsert(hour_key, hour_articles, ttl=HOUR_TTL)
+
+    # 2. Try day cache (Redis → DB fallback)
+    day_articles = redis_get(day_key) or db_get(day_key)
+    if day_articles is None:
+        day_articles = []
+        redis_set(day_key, day_articles, ex=DAY_TTL)
+
+    # 3. Merge: day (stable older) + hour (fresh current)
+    return merge_dedupe(day_articles, hour_articles, key="link")[:20]
+
+def promote_hour_to_day():
+    """APScheduler job — runs at :00 of each hour."""
+    prev_hour = (utc_now() - timedelta(hours=1)).strftime("%Y-%m-%d-%H")
+    today     = utc_now().strftime("%Y-%m-%d")
+    prev_articles = redis_get(f"news:hour:{prev_hour}") or db_get(f"news:hour:{prev_hour}")
+    if prev_articles:
+        day_articles = redis_get(f"news:day:{today}") or []
+        merged = merge_dedupe(day_articles, prev_articles, key="link")
+        redis_set(f"news:day:{today}", merged, ex=seconds_until_midnight_utc())
+        db_upsert(f"news:day:{today}", merged, ttl=seconds_until_midnight_utc())
+```
+
+#### 3.4 Article Schema
+```python
+@dataclass
+class Article:
+    id:        str   # sha256(link)[:12]
+    source:    str
+    title:     str
+    link:      str
+    summary:   str
+    published: str   # ISO 8601
+    hour_slot: str   # "2026-05-04-09"
+```
+
+#### 3.5 APScheduler Setup (`app.py`)
+```python
+from apscheduler.schedulers.background import BackgroundScheduler
+scheduler = BackgroundScheduler()
+scheduler.add_job(promote_hour_to_day, 'cron', minute=0)
+scheduler.start()
+```
+
+#### 3.6 `GET /news` Updates
+- Optional `?force=true` query param bypasses hour cache (for manual refresh button).
+- Returns `{articles: [...], cache_hit: bool, fetched_at: str}`.
+
+### Frontend Tasks
+
+#### 3.7 `NewsArticle` Type (`types/index.ts`)
+```ts
+export interface NewsArticle {
+  id:        string
+  source:    string
+  title:     string
+  link:      string
+  summary:   string
+  published: string
+  hour_slot: string
+}
+```
+
+#### 3.8 Updated `NewsPanel.tsx`
+- Group articles by `source` with collapsible sections.
+- Each article: title (link), summary (2 lines truncated), relative time ("2h ago").
+- "Refresh" button calls `GET /news?force=true`.
+- Badge: "Updated X min ago" based on `fetched_at` from API.
+- Skeleton cards (3 per source) while loading.
+
+### Unit Tests
+
+#### Backend — `tests/unit/test_news.py`
+```python
+def test_get_news_returns_articles(mock_redis, mock_rss): ...
+def test_hour_cache_hit_skips_rss_fetch(mock_redis_with_hour_cache, mock_rss): ...
+def test_day_cache_used_for_older_articles(mock_redis): ...
+def test_force_true_bypasses_hour_cache(mock_redis): ...
+def test_promote_hour_to_day_merges_correctly(mock_redis): ...
+def test_deduplication_by_link(mock_redis): ...
+def test_db_fallback_when_redis_unavailable(mock_redis_down, mock_db): ...
+def test_empty_feed_returns_gracefully(mock_empty_rss): ...
+def test_article_id_is_stable_hash_of_link(): ...
+```
+
+#### Frontend — `src/components/NewsPanel.test.tsx`
+```ts
+test('renders articles grouped by source')
+test('shows relative timestamps')
+test('shows skeleton while loading')
+test('refresh button triggers force fetch')
+test('shows error state on fetch failure')
+test('truncates long summaries to 2 lines')
+test('article title is a link to original URL')
+```
+
+### E2E Tests — `e2e/news.spec.ts`
+```ts
+test('news panel loads on app open')
+test('articles are grouped by source')
+test('refresh button loads updated news')
+test('news persists across page navigation within session')
+```
+
+---
+
+## Phase 4 — Knowledge Check (`feature/knowledge-check`)
+
+### Goal
+Users can generate technical MCQs from any chat session, answer them in a new tab, auto-save progress, and retry.
+
+### New Files
+```
+backend/api/quiz/__init__.py
+backend/api/quiz/routes.py         ← Blueprint('/quiz'): all quiz endpoints
+backend/api/quiz/service.py        ← attempt lifecycle: generate, save, submit, retry, relearn
+backend/api/quiz/generator.py      ← MCQ LLM prompt + validation; relearn prompt + caching
+backend/migrations/004_mcq_attempts.sql
+tests/unit/test_quiz.py
+frontend/src/pages/QuizPage.tsx
+frontend/src/components/MCQCard.tsx
+frontend/src/components/QuizResult.tsx
+frontend/src/hooks/useQuiz.ts
+frontend/src/api/quiz.ts
+frontend/src/pages/QuizPage.test.tsx
+frontend/src/components/MCQCard.test.tsx
+frontend/src/hooks/useQuiz.test.ts
+e2e/quiz.spec.ts
+```
+
+### Modified Files
+```
+backend/app.py                        ← register quiz blueprint
+backend/agent/prompts.py              ← add MCQ_GENERATION_PROMPT constant
+frontend/src/App.tsx                  ← add /quiz/:attemptId route
+frontend/src/components/InputBar.tsx  ← add "Check Knowledge" button (detects session type)
+```
+
+### Backend Tasks
+
+#### 4.1 DB Migration — `migrations/004_mcq_attempts.sql`
+```sql
+CREATE TABLE mcq_attempts (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      UUID REFERENCES users(id) ON DELETE CASCADE,
+    session_id   UUID REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    questions    JSONB NOT NULL,
+    answers      JSONB,
+    score        SMALLINT,
+    attempted_at TIMESTAMPTZ DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX idx_mcq_session ON mcq_attempts(session_id);
+```
+
+#### 4.2 `quiz.py` Endpoints
+
+**`POST /quiz/generate`** — body: `{session_id}`
+1. Verify session ownership.
+2. Load conversation from LangGraph state (thread_id of session).
+3. Filter out small-talk turns (skip turns < 30 chars from user).
+4. Call LLM with the MCQ generation prompt (see ARCHITECTURE.md §8.3).
+5. Parse and validate JSON response (8 questions, each with 4 options, `correct` 0–3).
+6. Insert into `mcq_attempts` with `answers=null`, `score=null`. Return `attempt_id` + questions WITHOUT `correct` field.
+
+**`GET /quiz/attempt/{id}`** — load saved state
+- Verify ownership.
+- Return `{attempt_id, questions (without correct), answers, score, completed_at}`.
+- If `completed_at IS NOT NULL`, include `correct` fields so user can review answers.
+
+**`PUT /quiz/attempt/{id}`** — auto-save answers
+- Body: `{answers: {q_01: 1, ...}}`.
+- Verify ownership.
+- Upsert `answers` in DB.
+- If body includes `completed: true`: compute score, set `completed_at`, return full questions WITH `correct`.
+
+**`POST /quiz/retry`** — body: `{session_id}`
+- Find latest `mcq_attempts` row for this session.
+- Create NEW row with same `questions`, `answers=null`, `score=null`.
+- Return new `attempt_id`.
+
+**`GET /quiz/attempts`** — query: `?session_id=uuid`
+- Return list of attempts for session (score, attempted_at, completed_at) for history display.
+
+#### 4.3 MCQ Validation
+After LLM response, validate:
+- Exactly 8 questions.
+- Each question has `id`, `text`, `options` (exactly 4), `correct` (0–3 int).
+- No question text is shorter than 15 chars.
+- No duplicate question IDs.
+- If validation fails: retry LLM call once; if still invalid, return `503`.
+
+### Frontend Tasks
+
+#### 4.4 "Check Knowledge" Button (`InputBar.tsx` or below `MessageList`)
+- Renders only when active session has ≥ 3 assistant messages.
+- On click: POST to `/quiz/generate`, then `window.open('/quiz/{attempt_id}', '_blank')`.
+- Button state: idle / generating (spinner) / error (try again).
+
+#### 4.5 `/quiz/:attemptId` Page (`Quiz.tsx`)
+
+**Layout:**
+```
+┌────────────────────────────────────────────────────┐
+│ Knowledge Check · {session title}                  │
+│ {score} / 8          [Submit]   [Back to Chat]     │
+├────────────────────────────────────────────────────┤
+│ Q1 card                                            │
+│ Q2 card                                            │
+│ ...                                                │
+├────────────────────────────────────────────────────┤
+│ [Retry]                                            │
+└────────────────────────────────────────────────────┘
+```
+
+**Behaviour:**
+- On mount: fetch attempt from `GET /quiz/attempt/{id}` to restore any saved answers.
+- If `completed_at` is set: render in review mode (correct/wrong highlighted, no editing).
+- Otherwise: render in active mode (selectable options).
+- Each selection: update local state + debounced 500ms auto-save `PUT /quiz/attempt/{id}`.
+- Submit: PUT with `{answers, completed: true}`, transition to review mode, show score.
+- Retry: POST `/quiz/retry`, `window.location.href = '/quiz/{new_attempt_id}'`.
+
+#### 4.6 `MCQCard.tsx`
+Props: `question`, `selectedOption`, `onSelect`, `mode: 'active' | 'review'`, `correctOption?`
+- Active mode: radio-style selectable options.
+- Review mode: green for correct, red for wrong selection, green outline for correct if user was wrong.
+
+#### 4.7 `useQuiz.ts`
+- Loads attempt on mount.
+- `selectAnswer(questionId, optionIndex)` → updates local + triggers debounced save.
+- `submitQuiz()` → PUT with `completed: true`.
+- `isCompleted`, `score` derived state.
+
+### Unit Tests
+
+#### Backend — `tests/unit/test_quiz.py`
+```python
+def test_generate_quiz_returns_8_questions(auth_client, session_with_messages): ...
+def test_generate_quiz_questions_have_no_correct_field(auth_client, session): ...
+def test_generate_quiz_for_other_users_session_returns_403(auth_client): ...
+def test_get_attempt_returns_saved_answers(auth_client, attempt_with_answers): ...
+def test_get_completed_attempt_includes_correct_field(auth_client, completed_attempt): ...
+def test_autosave_updates_answers(auth_client, open_attempt): ...
+def test_submit_scores_correctly(auth_client, open_attempt): ...
+def test_submit_sets_completed_at(auth_client, open_attempt): ...
+def test_retry_creates_new_attempt_same_questions(auth_client, completed_attempt): ...
+def test_get_attempts_returns_history(auth_client, session_with_attempts): ...
+def test_mcq_validation_rejects_less_than_8_questions(mock_llm_bad_response): ...
+def test_ownership_check_on_put_attempt(other_user_client, attempt_id): ...
+```
+
+#### Frontend — `src/pages/Quiz.test.tsx`
+```ts
+test('loads saved answers on mount')
+test('renders review mode for completed attempt')
+test('each option click updates selection')
+test('answer is auto-saved after 500ms debounce')
+test('submit transitions to review mode')
+test('score is displayed after submit')
+test('retry opens new attempt URL')
+test('back to chat button navigates to /app')
+```
+
+#### Frontend — `src/components/MCQCard.test.tsx`
+```ts
+test('renders question text and 4 options')
+test('clicking option calls onSelect with index')
+test('selected option is highlighted')
+test('review mode correct option is green')
+test('review mode wrong selection is red with correct shown green')
+test('review mode options are not clickable')
+```
+
+#### Frontend — `src/hooks/useQuiz.test.ts`
+```ts
+test('fetches attempt on mount')
+test('selectAnswer updates answers state')
+test('selectAnswer triggers debounced PUT after 500ms')
+test('submitQuiz calls PUT with completed: true')
+test('score computed from correct answers after submit')
+test('isCompleted is true for completed attempt')
+```
+
+### E2E Tests — `e2e/quiz.spec.ts`
+```ts
+test('check knowledge button appears after 3 AI replies')
+test('clicking check knowledge opens quiz in new tab')
+test('quiz loads with 8 questions')
+test('selecting an answer saves it (visible on reload)')
+test('submitting quiz shows score and highlights answers')
+test('correct answer is green, wrong answer is red in review')
+test('retry creates fresh attempt with same questions')
+test('quiz page shows session title in header')
+```
+
+---
+
+## Phase 5 — Polish & Hardening (`feature/polish`)
+
+### Goal
+Rate limiting on auth, refresh token rotation with Redis blocklist, mobile-responsive layout, error boundaries, toast notifications, and the golden-path E2E covering the full user journey.
+
+### Tasks
+
+#### 5.1 Security Hardening
+- `flask-limiter`: 5 req/min per IP on `/auth/login`; 3 req/min on `/auth/register`.
+- Refresh token rotation already done in Phase 1 — add `REVOKED_TOKENS` Redis set as double-check.
+- Add `Content-Security-Policy` header via Flask `after_request`.
+- Ensure no stack traces in error responses when `FLASK_ENV=production`.
+
+#### 5.2 Mobile Layout
+- ChatSidebar: slide-in drawer behind hamburger menu (≤ lg breakpoint).
+- NewsPanel: bottom sheet on mobile (swipe-up drawer).
+- Quiz page: full-screen, single-column card layout on mobile.
+
+#### 5.3 Error Boundaries
+- React `ErrorBoundary` wrapper around ChatSidebar, NewsPanel, Quiz page.
+- Fallback UI: "Something went wrong. Reload the page."
+
+#### 5.4 Toast Notifications
+- Use `sonner` (lightweight, no heavy dependency).
+- Events: session renamed, session deleted, quiz submitted, auto-save failed (warning).
+
+#### 5.5 Additional Unit Tests
+```python
+# tests/unit/test_rate_limiting.py
+def test_login_rate_limit_after_5_requests(): ...
+def test_register_rate_limit_after_3_requests(): ...
+```
+
+### E2E Tests — `e2e/full-flow.spec.ts`
+```ts
+test('golden path: register → chat → receive auto-title → check knowledge → answer → submit → score')
+test('returning user: login → see previous session → resume chat → retry quiz')
+test('news panel loads and refreshes without breaking chat')
+test('mobile: hamburger opens sidebar, session selected, sidebar closes')
+```
+
+---
+
+---
+
+## Phase 6 — News Tabs, Discuss & Learning Tree (`feature/news-discuss-learn`)
+
+### Goal
+Transform the right-side news panel into a three-tab group (AI / Programming / Political). Add a **Discuss** button on each article that opens a new learning chat in the main pane with sectioned AI responses. Each section has a **[Learn More →]** button that opens a dedicated `/learn/:id` tab with a knowledge tree in the right pane. The learning chain can go arbitrarily deep. **[Check Knowledge]** at any depth generates MCQs covering the whole ancestry path, with per-question Relearn explanations for wrong answers and **[Explore deeper]** for correct answers.
+
+### New Files
+```
+backend/api/discuss/__init__.py
+backend/api/discuss/routes.py      ← Blueprint('/') for /news/discuss + /sessions/{id}/learn-more + /sessions/{id}/tree
+backend/api/discuss/service.py     ← news_discuss(), create_learn_more_session(), get_tree()
+backend/migrations/005_session_hierarchy.sql
+tests/unit/test_discuss.py
+tests/unit/test_news_categories.py
+tests/unit/test_hierarchical_quiz.py
+
+frontend/src/pages/LearnPage.tsx           ← /learn/:sessionId route
+frontend/src/components/NewsTabs.tsx       ← tab group wrapper
+frontend/src/components/NewsArticleCard.tsx← article card + Discuss button
+frontend/src/components/SectionedMessage.tsx ← sectioned AI response renderer
+frontend/src/components/KnowledgeTree.tsx  ← right pane hierarchy tree
+frontend/src/components/TreeNode.tsx       ← single tree node
+frontend/src/components/RelearPanel.tsx    ← wrong-answer relearn card
+frontend/src/hooks/useDiscuss.ts
+frontend/src/hooks/useLearnMore.ts
+frontend/src/hooks/useSessionTree.ts
+frontend/src/hooks/useHierarchicalQuiz.ts
+
+frontend/src/components/NewsTabs.test.tsx
+frontend/src/components/NewsArticleCard.test.tsx
+frontend/src/components/SectionedMessage.test.tsx
+frontend/src/components/KnowledgeTree.test.tsx
+frontend/src/components/RelearPanel.test.tsx
+frontend/src/hooks/useDiscuss.test.ts
+frontend/src/hooks/useLearnMore.test.ts
+frontend/src/hooks/useSessionTree.test.ts
+frontend/src/hooks/useHierarchicalQuiz.test.ts
+e2e/discuss.spec.ts
+e2e/learn-more.spec.ts
+e2e/hierarchical-quiz.spec.ts
+```
+
+### Modified Files
+```
+backend/api/news/cache.py           ← add category param + category-keyed cache keys
+backend/api/news/feeds.py           ← add programming + political feed lists
+backend/api/news/service.py         ← get_news(category, force) — extend signature
+backend/api/quiz/service.py         ← add generate_hierarchical(), relearn() methods
+backend/api/quiz/generator.py       ← add HIERARCHICAL_MCQ_PROMPT, RELEARN_PROMPT constants
+backend/api/sessions/service.py     ← update list_sessions() to include new session_type columns
+backend/app.py                      ← register discuss blueprint
+backend/agent/prompts.py            ← add DISCUSSION_PROMPT, LEARN_MORE_PROMPT constants
+frontend/src/App.tsx                ← add /learn/:sessionId route
+frontend/src/components/ChatSidebar.tsx  ← nested tree rendering
+frontend/src/components/NewsPanel.tsx    ← replaced by NewsTabs wrapper
+frontend/src/types/index.ts             ← new types: Section, SectionedResponse, TreeNode, SessionType
+```
+
+### Backend Tasks
+
+#### 6.1 DB Migration — `migrations/005_session_hierarchy.sql`
+```sql
+ALTER TABLE chat_sessions
+    ADD COLUMN session_type      VARCHAR(20) NOT NULL DEFAULT 'regular',
+    ADD COLUMN parent_session_id UUID        REFERENCES chat_sessions(id),
+    ADD COLUMN root_session_id   UUID        REFERENCES chat_sessions(id),
+    ADD COLUMN depth_level       INTEGER     NOT NULL DEFAULT 0,
+    ADD COLUMN topic             VARCHAR(500),
+    ADD COLUMN news_article_id   VARCHAR(20);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_parent ON chat_sessions(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_root   ON chat_sessions(root_session_id);
+
+ALTER TABLE mcq_attempts
+    ADD COLUMN scope_sessions JSONB,
+    ADD COLUMN relearn_cache  JSONB DEFAULT '{}';
+```
+
+#### 6.2 News Category Extension (`cache/news.py`)
+- Add `NEWS_FEEDS` dict keyed by `'ai'`, `'programming'`, `'political'` (see ARCHITECTURE.md §16.2).
+- `get_news(category: str = 'ai', force: bool = False)` — update cache key to `news:day:{date}:{category}` and `news:hour:{date-hour}:{category}`.
+- `promote_hour_to_day()` APScheduler job now iterates all three categories.
+- `GET /news?category=ai` defaults to `ai`; accepts `programming` or `political`.
+- Pre-warm all three categories at startup.
+
+#### 6.3 `backend/api/discuss/service.py` — `news_discuss()` + `routes.py` — `POST /news/discuss`
+1. Validate `article_id`, `article_title`, `article_summary`, `article_link` in body.
+2. Create `chat_sessions` row: `session_type='news_discussion'`, `news_article_id=article_id`, `root_session_id=self.id`, `depth_level=0`, `title=article_title[:80]`.
+3. Call LangGraph with discussion system prompt + article content.
+4. Parse and validate sectioned JSON response (see ARCHITECTURE.md §18.1). Retry once on failure.
+5. Store first AI response in LangGraph checkpoint.
+6. Return `{session_id, thread_id, title, first_response}`.
+
+#### 6.4 `backend/api/discuss/service.py` — `create_learn_more_session()`
+1. Verify ownership of session `id`.
+2. Validate `topic` (1–500 chars) in body.
+3. Create new `chat_sessions`: `session_type='learn_more'`, `parent_session_id=id`, `root_session_id=parent.root_session_id`, `depth_level=parent.depth_level+1`, `topic=request.topic`.
+4. Call LangGraph with learn_more system prompt + topic.
+5. Parse and validate sectioned response. Retry once on failure.
+6. Return `{session_id, thread_id, title}`. Frontend opens `/learn/{session_id}` in new tab.
+
+#### 6.5 `backend/api/discuss/service.py` — `get_tree()`
+1. Verify ownership.
+2. Walk `parent_session_id` chain: start at `id`, follow `parent_session_id` until NULL.
+3. Collect `{session_id, title, topic, depth_level, session_type, news_article_id, is_current}` for each node.
+4. Return array ordered root → current.
+
+#### 6.6 `backend/api/quiz/generator.py` + `service.py` — `generate_hierarchical()`
+1. Verify session ownership.
+2. Call `GET /sessions/{id}/tree` internally.
+3. For each node in the tree, load LangGraph state and extract conversation text.
+4. Build MCQ prompt: include all topics and conversation excerpts, oldest to newest.
+5. Instruct LLM to generate 8 questions spanning all topics; each question must include `topic` and `source_depth` fields.
+6. Validate response (same rules as regular MCQ + `topic` ≥ 5 chars + `source_depth` 0–N).
+7. Store in `mcq_attempts` with `scope_sessions=[session_id for each node]`.
+8. Return questions without `correct` field.
+
+#### 6.7 `backend/api/quiz/generator.py` + `service.py` — `get_relearn_explanation()`
+1. Verify attempt ownership.
+2. Check `attempt.relearn_cache[question_id]` — return cached explanation if present.
+3. Build relearn prompt: "In 3–4 sentences, explain why the correct answer is correct and why the distractors are wrong. Question: {text}. Correct: {options[correct]}. Topic: {topic}."
+4. Call LLM (lightweight call — no conversation history needed).
+5. Store result in `relearn_cache[question_id]` via UPDATE.
+6. Return `{explanation: str}`.
+
+#### 6.8 Updated `backend/api/sessions/service.py` — `list_sessions()`
+Add to returned fields: `session_type`, `parent_session_id`, `root_session_id`, `depth_level`, `topic`, `news_article_id`.
+
+### Frontend Tasks
+
+#### 6.9 `NewsTabs.tsx`
+- Three tab buttons: AI / Programming / Political. Active tab stored in local state.
+- On tab switch: React Query key changes to `['news', category]`.
+- Each tab renders a list of `NewsArticleCard` components.
+
+#### 6.10 `NewsArticleCard.tsx`
+Props: `article: NewsArticle`, `onDiscuss: (article) => void`
+- Title (link to source), 2-line summary, relative timestamp.
+- `[↗ Source]` → `window.open(article.link, '_blank', 'noopener,noreferrer')`.
+- `[Discuss]` → calls `onDiscuss(article)`.
+  - Button state: idle → loading (spinner) → done (disabled, "Opened").
+  - On success: navigate main pane to the new `news_discussion` session.
+
+#### 6.11 `useDiscuss.ts`
+- `discuss(article)` → `POST /news/discuss`, sets active session in `useSessions`, renders `first_response` immediately in chat.
+- Returns `{isLoading, error, discuss}`.
+
+#### 6.12 `SectionedMessage.tsx`
+Props: `content: MessageContent`, `currentSessionId: string`
+- If `content.type === 'plain'`: render markdown (existing `Message` component).
+- If `content.type === 'sectioned'`:
+  - Render `intro` as plain paragraph.
+  - For each section: card with title, content, `[Learn More →]` button.
+  - Render `outro` as plain paragraph.
+- Learn More button state per section: `idle | loading | opened`.
+- On click: `useLearnMore(currentSessionId, section.learn_more_topic)` → disable button → show checkmark.
+
+#### 6.13 `useLearnMore.ts`
+- `learnMore(parentSessionId, topic)` → `POST /sessions/{parentSessionId}/learn-more` → `window.open('/learn/{session_id}', '_blank', 'noopener,noreferrer')`.
+- Returns `{isLoading, error, learnMore}`.
+
+#### 6.14 `LearnPage.tsx` (`/learn/:sessionId`)
+- Same three-pane layout as `/app`.
+- Left pane: `ChatSidebar` (same component, shows full hierarchy).
+- Centre pane: `ChatInterface` for the learn_more session. Shows `[Check Knowledge]` button at bottom; clicking calls `POST /quiz/generate-hierarchical`.
+- Right pane: `KnowledgeTree` (instead of `NewsPanel`).
+- On mount: fetch session, verify it's a `learn_more` session, load tree.
+
+#### 6.15 `KnowledgeTree.tsx`
+Props: `sessionId: string`
+- Fetches `GET /sessions/{sessionId}/tree` via `useSessionTree`.
+- Renders nodes top-to-bottom with connecting vertical lines.
+- Root node: `📰` icon + article title + source.
+- Sub-nodes: `⚡` icon + topic + indented.
+- Current node: highlighted with left border.
+- Navigation: `[↩ Back to root]` → `window.open('/learn/{root_session_id}', '_blank')`.
+
+#### 6.16 `ChatSidebar.tsx` (updated — nested tree)
+- `GET /sessions` now returns full hierarchy data.
+- Build tree client-side: group all `learn_more` sessions under their `parent_session_id`.
+- Render `news_discussion` sessions with a collapse toggle; `learn_more` children indented below.
+- Icons: `📰` for `news_discussion`, `⚡` for `learn_more`, no icon for `regular`.
+
+#### 6.17 Hierarchical Quiz Page (updated `Quiz.tsx`)
+After submit, for each **wrong** answer:
+- Lazy-load `GET /quiz/attempt/{id}/relearn/{q_id}` when wrong-answer panel first opens.
+- Render `RelearPanel` with explanation text.
+- `[Explore deeper: {topic} →]` button → `useLearnMore(attempt.session_id, question.topic)`.
+
+After submit, for each **correct** answer:
+- Render green `✅ Correct!` badge.
+- `[Explore deeper: {topic} →]` button → same `useLearnMore` call.
+
+The `[Check Knowledge]` button in `ChatInterface` now detects session type:
+- `regular` → `POST /quiz/generate` (existing flat MCQ)
+- `news_discussion` or `learn_more` → `POST /quiz/generate-hierarchical`
+
+### Unit Tests
+
+#### Backend — `tests/unit/test_discuss.py`
+```python
+def test_discuss_creates_news_discussion_session(auth_client, article_payload): ...
+def test_discuss_returns_sectioned_first_response(auth_client, article_payload): ...
+def test_discuss_retries_on_invalid_llm_format(auth_client, mock_bad_then_good_llm): ...
+def test_discuss_returns_503_after_two_llm_failures(auth_client, mock_always_bad_llm): ...
+def test_learn_more_creates_child_session(auth_client, discuss_session_id): ...
+def test_learn_more_increments_depth_level(auth_client, learn_more_session_id): ...
+def test_learn_more_sets_correct_root_session_id(auth_client, nested_sessions): ...
+def test_learn_more_on_other_users_session_returns_403(auth_client, other_session_id): ...
+def test_get_tree_returns_full_ancestry(auth_client, three_level_session_id): ...
+def test_get_tree_ordered_root_to_current(auth_client, three_level_session_id): ...
+def test_get_tree_marks_current_node(auth_client, session_id): ...
+def test_get_tree_for_other_users_session_returns_403(auth_client): ...
+```
+
+#### Backend — `tests/unit/test_news_categories.py`
+```python
+def test_get_news_ai_category_returns_ai_feeds(mock_redis, mock_rss): ...
+def test_get_news_programming_category_returns_programming_feeds(mock_redis, mock_rss): ...
+def test_get_news_political_category_returns_political_feeds(mock_redis, mock_rss): ...
+def test_category_cache_keys_are_isolated(mock_redis): ...
+def test_promote_hour_to_day_runs_for_all_categories(mock_redis): ...
+def test_invalid_category_returns_400(): ...
+def test_default_category_is_ai(app_client): ...
+```
+
+#### Backend — `tests/unit/test_hierarchical_quiz.py`
+```python
+def test_generate_hierarchical_spans_full_tree(auth_client, three_level_session): ...
+def test_generate_hierarchical_questions_have_source_depth(auth_client, session): ...
+def test_generate_hierarchical_questions_have_topic_field(auth_client, session): ...
+def test_relearn_returns_explanation_for_wrong_answer(auth_client, submitted_attempt): ...
+def test_relearn_is_cached_on_second_call(auth_client, submitted_attempt): ...
+def test_relearn_on_correct_answer_returns_400(auth_client, submitted_attempt): ...
+def test_scope_sessions_stored_in_attempt(auth_client, three_level_session): ...
+```
+
+#### Frontend — Unit Tests
+```ts
+// NewsTabs.test.tsx
+test('renders three tabs: AI, Programming, Political')
+test('clicking a tab changes active category')
+test('active tab fetches news with correct category')
+
+// NewsArticleCard.test.tsx
+test('renders title, summary, and relative timestamp')
+test('source link opens in new tab')
+test('discuss button shows loading state while creating session')
+test('discuss button becomes disabled after session created')
+test('discuss button calls onDiscuss with article data')
+
+// SectionedMessage.test.tsx
+test('renders intro, sections, and outro for sectioned type')
+test('renders plain markdown for plain type')
+test('each section has Learn More button')
+test('Learn More button shows loading spinner during API call')
+test('Learn More button shows checkmark after opening new tab')
+test('Learn More button does not call API again after it was clicked')
+
+// KnowledgeTree.test.tsx
+test('renders all nodes from root to current')
+test('current node is visually highlighted')
+test('root node shows news source label')
+test('back to root button is present')
+test('depth counter shows correct level number')
+test('clicking a non-current node opens that session')
+
+// RelearPanel.test.tsx
+test('shows loading skeleton while fetching explanation')
+test('renders explanation text after fetch')
+test('explore deeper button calls useLearnMore with question topic')
+test('explore deeper button disabled after click')
+
+// useDiscuss.test.ts
+test('discuss calls POST /news/discuss with article data')
+test('discuss returns session data on success')
+test('discuss exposes loading state during request')
+test('discuss exposes error on failure')
+
+// useLearnMore.test.ts
+test('learnMore calls POST /sessions/{id}/learn-more with topic')
+test('learnMore opens new tab on success')
+test('learnMore returns loading and error state')
+
+// useSessionTree.test.ts
+test('fetches tree on mount')
+test('tree is ordered root to current')
+test('current node has is_current: true')
+
+// useHierarchicalQuiz.test.ts
+test('generate calls POST /quiz/generate-hierarchical for learn_more sessions')
+test('generate calls POST /quiz/generate for regular sessions')
+test('relearn fetches explanation for wrong answer')
+test('relearn is not re-fetched when already cached in local state')
+```
+
+### E2E Tests
+
+#### `e2e/discuss.spec.ts`
+```ts
+test('news panel shows three tabs: AI, Programming, Political')
+test('switching tabs loads different news sources')
+test('each article card has a Discuss button')
+test('clicking Discuss creates a new session in the sidebar')
+test('first response is sectioned with Learn More buttons')
+test('user can type follow-up questions in the discuss thread')
+test('discuss session appears as 📰 in left sidebar')
+```
+
+#### `e2e/learn-more.spec.ts`
+```ts
+test('clicking Learn More on a section opens a new tab')
+test('new tab URL is /learn/:sessionId')
+test('right pane in /learn tab shows knowledge tree, not news')
+test('knowledge tree shows root article and current topic')
+test('current node is highlighted in the tree')
+test('learn_more session appears indented under parent in sidebar')
+test('clicking Learn More again goes one level deeper with extended tree')
+test('back to root button navigates to root session')
+test('user can ask questions in learn_more chat thread')
+```
+
+#### `e2e/hierarchical-quiz.spec.ts`
+```ts
+test('Check Knowledge in /learn tab generates hierarchical MCQs')
+test('MCQs span multiple depth levels (source_depth present)')
+test('wrong answer shows relearn explanation panel')
+test('relearn panel has Explore deeper button')
+test('correct answer shows green success badge')
+test('correct answer has Explore deeper button')
+test('Explore deeper on correct answer opens new /learn tab')
+test('Explore deeper on wrong answer opens new /learn tab for that topic')
+test('retry quiz resets all answers and relearn panels')
+```
+
+---
+
+## CI Workflow Summary
+
+Every PR triggers `.github/workflows/ci.yml`:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  CI Pipeline                                            │
+│                                                         │
+│  lint-backend  ──────────────────────────────┐         │
+│  (flake8, mypy)                               │         │
+│                                               ▼         │
+│  test-backend  ──────────────────────────► all-pass?   │
+│  (pytest --cov=. --cov-fail-under=80)         │         │
+│                                               │         │
+│  lint-frontend ──────────────────────────────┤         │
+│  (eslint, tsc --noEmit)                       │         │
+│                                               │         │
+│  test-frontend ──────────────────────────────┤         │
+│  (vitest --coverage --coverage-threshold=80)  │         │
+│                                               │         │
+│  e2e           ──────────────────────────────┘         │
+│  (playwright, docker-compose up, run specs)             │
+└─────────────────────────────────────────────────────────┘
+```
+
+Coverage thresholds: **80% line coverage** for both backend and frontend.
+E2E smoke: runs full-flow spec; individual specs run per-phase branch.

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Move-Item \"D:\\\\code-setup\\\\ai-agent\\\\ARCHITECTURE.md\" \"D:\\\\code-setup\\\\ai-agent\\\\docs\\\\ARCHITECTURE.md\")",
+      "Bash(Move-Item \"D:\\\\code-setup\\\\ai-agent\\\\IMPLEMENTATION_PLAN.md\" \"D:\\\\code-setup\\\\ai-agent\\\\docs\\\\IMPLEMENTATION_PLAN.md\")",
+      "Bash(Move-Item \"D:\\\\code-setup\\\\ai-agent\\\\PROGRESS.md\" \"D:\\\\code-setup\\\\ai-agent\\\\docs\\\\PROGRESS.md\")",
+      "Bash(xargs ls *)",
+      "Bash(git init *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}

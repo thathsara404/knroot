@@ -1,0 +1,200 @@
+name: Architecture Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+      - develop
+    paths:
+      - 'apps/api/src/**/*.module.ts'
+      - 'apps/api/src/**/*.service.ts'
+      - 'apps/api/src/**/*.controller.ts'
+      - 'apps/api/src/**/*.schema.ts'
+      - 'apps/api/src/app.module.ts'
+      - 'apps/api/src/common/**/*.ts'
+      - 'apps/api/src/config/**/*.ts'
+      - 'apps/web/src/**/*.ts'
+      - 'apps/web/src/**/*.tsx'
+      - 'packages/shared-types/src/**/*.ts'
+      - 'docs/**'
+
+concurrency:
+  group: architecture-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gemini Architecture Reviewer
+        uses: sshnaidm/gemini-code-review-action@v1
+        with:
+          gemini-key: ${{ secrets.GEMINI_API_KEY }}
+          model: "gemini-3-flash-preview"
+          review-title: "🏗️ Architectural Review"
+          prompt: |
+            You are a strict Software Architect reviewing a Pull Request targeting the main/develop
+            branch of BakeSuite — a B2B multi-tenant SaaS platform. Your job is to detect structural
+            drift from the documented architecture and surface scalability risks before they compound.
+
+            ## ARCHITECTURE REFERENCE
+
+            ### Canonical module list
+            `auth`, `users`, `organizations`, `inventory`, `recipes`, `costs`, `sales`, `analytics`,
+            `audit-logs`, `otp`, `sms`
+
+            ### Documented API surface — verify routes match exactly
+            - `GET /organizations` — ROOT only (list all)
+            - `GET /organizations/me`, `PATCH /organizations/me` — ADMIN (own org)
+            - `GET/POST/PATCH/DELETE /users` — ADMIN, tenant-scoped
+            - `GET/POST/PATCH /ingredients` + `/:id/price-log` + `/:id/price-history` — OPERATOR
+            - `GET/POST/PATCH/DELETE /recipes` — OPERATOR
+            - `GET/POST/PATCH /costs/fixed` and `/costs/utilities` — OPERATOR
+            - `POST /transactions` (CASHIER), `GET /transactions` (ADMIN+OPERATOR)
+            - `GET /analytics/dashboard?timeframe=...` — ADMIN + ROOT
+            - `GET /audit-logs` — ADMIN (own org) + ROOT (all)
+
+            ### Response envelope — all endpoints must return this shape
+            `{ success: boolean; data: T; meta?: { page, limit, total }; error?: { code, message } }`
+
+            ### Key design decisions — must not be violated
+            1. `tenantId` field on every tenant-scoped document (not separate DBs).
+            2. Mongoose only — no Prisma imports anywhere.
+            3. Analytics computed server-side via MongoDB aggregation pipelines (`$group`, `$match`,
+               `$project`) — not in-memory JS loops.
+            4. COGS stored on Transaction at sale time (`totalCOGS`, `unitCOGS`) — never re-computed on read.
+            5. Stock deduction uses atomic `$inc` in a single `findOneAndUpdate` — not read-modify-write.
+            6. Cross-app types in `packages/shared-types` only — not duplicated in `apps/api` or `apps/web`.
+            7. COGS frozen at sale time — `RecipesService.computeCOGS()` is for display only, never the
+               source of truth for transaction data.
+
+            ## ARCHITECTURAL CHECKLIST
+
+            ### 1. MODULE BOUNDARIES & COHESION 📦
+            - Each NestJS module owns exactly one domain concept. Flag mixed-concern modules.
+            - `exports` array contains only what other modules explicitly need — no over-exporting.
+            - `AuthModule` must not import any domain module (`InventoryModule`, `RecipesModule`, etc.).
+            - `RecipesModule` importing `InventoryModule` is the only sanctioned cross-domain import.
+            - `AppModule` contains only global provider wiring — no business logic.
+
+            ### 2. LAYERED ARCHITECTURE 🔗
+            **Required chain: Controller → Service → Mongoose Model**
+            - Controllers never call `Model.find()`, `Model.save()`, or Mongoose methods directly.
+            - Services call only the public API of injected services — not internal helpers.
+            - Services receive typed DTOs — no raw `req.body` in service methods.
+            - Mongoose aggregation pipelines in services — not controllers or interceptors.
+            - No business logic (COGS, slug generation, price calculation) in DTOs, schemas, or modules.
+
+            ### 3. MULTI-TENANCY CONSISTENCY ⚠️
+            **Treat any gap as Critical Drift — this is the primary data isolation boundary.**
+            - Every tenant-scoped schema has `tenantId: { type: Types.ObjectId, ref: 'Organization',
+              required: true }`.
+            - Every `find`, `findOne`, `findById`, `findOneAndUpdate`, `updateOne`, `deleteOne` on a
+              tenant-scoped collection includes `{ tenantId }` in the filter.
+            - `findById` alone (without tenantId) only acceptable on global collections (`Organization`).
+            - `req.tenantId` is the sole source — never `req.body.tenantId` or `req.query.tenantId`.
+            - Cross-collection lookups validate that referenced documents share the same `tenantId`.
+
+            ### 4. API DESIGN CONFORMANCE 🛣️
+            - Implemented routes match the documented contract (method, path, access level) above.
+            - All list endpoints support `page`/`limit` pagination and return the `meta` envelope field.
+            - Single-resource endpoints use `GET /:id`; list endpoints use `GET /` with query params.
+            - Destructive actions use `DELETE` or `PATCH { isActive: false }` — never `POST /deactivate`.
+            - All endpoints return `ApiResponse<T>` — no raw document or custom shape responses.
+
+            ### 5. SCHEMA DESIGN & MONGODB PATTERNS 🗄️
+            **Embedding vs referencing (must match the ERD):**
+            - `RecipeIngredient` — EMBEDDED array inside `Recipe`. Flag if made a separate collection.
+            - `TransactionLineItem` — EMBEDDED array inside `Transaction`. Flag if separate collection.
+            - `IngredientPriceLog` — SEPARATE collection (queried independently by date range). Correct.
+            - `AuditLog` — SEPARATE collection.
+
+            **Required compound indexes:**
+            - `users`: `{ tenantId: 1, role: 1 }`, `{ tenantId: 1, email: 1 }`
+            - `ingredients`: `{ tenantId: 1, name: 1 }`
+            - `ingredient_price_logs`: `{ tenantId: 1, ingredientId: 1, loggedAt: -1 }`
+            - `recipes`: `{ tenantId: 1, isActive: 1 }`
+            - `transactions`: `{ tenantId: 1, timestamp: -1 }`
+            - `audit_logs`: `{ tenantId: 1, createdAt: -1 }`, `{ actorId: 1 }`
+            Flag any missing indexes on collections queried by range or sorted fields.
+
+            **Unbounded queries:**
+            - Flag `find({})` or `find({ tenantId })` without `.limit()` or pagination params.
+            - Flag `find().populate()` — BakeSuite uses manual reference resolution (COGS freeze requirement).
+
+            **Atomic operations:**
+            - Stock deduction: `$inc` in one `findOneAndUpdate`, not read-then-write.
+            - Price logging: `$set: { latestUnitPrice }` + `$inc: { currentStock }` in one operation.
+
+            ### 6. CROSS-CUTTING CONCERNS PLACEMENT 🔧
+            - `TenantInterceptor` is global in `AppModule` — flag if re-registered in any module.
+            - `RolesGuard` is global — controllers add `@Roles()` metadata only, never re-register the guard.
+            - `ValidationPipe` is global — individual controllers must not add their own pipe.
+            - `AuditLogInterceptor` is global — services must not manually call `AuditLogsService.log()`
+              except for background jobs the interceptor cannot capture.
+            - `@Throttle` applied per handler for overrides only — global throttler is the default.
+
+            ### 7. MONOREPO PACKAGE DISCIPLINE 📁
+            - `apps/api` and `apps/web` share code only via `packages/shared-types`. No cross-app imports.
+            - Types used by both apps belong in `packages/shared-types/src/`. Flag duplication.
+            - Enums (`Role`, `AuditAction`, `AuditResource`, `IngredientUnit`) imported from
+              `@bakesuite/shared-types` — never re-declared locally.
+            - `packages/shared-types` must not import from `apps/*`.
+
+            ### 8. BUSINESS LOGIC ALIGNMENT 💡
+            **COGS:**
+            - Formula: `SUM(ingredient.qty × ingredient.latestUnitPrice)` at sale time.
+            - `TransactionLineItem.unitCOGS` and `Transaction.totalCOGS` written at creation, never re-read.
+            - `RecipesService.computeCOGS()` for display preview only.
+
+            **Analytics:**
+            - All 10 metrics computed via MongoDB aggregation pipelines — flag in-memory JS computation.
+            - Fixed cost pro-rating uses `daysInMonth` per timeframe — flag simple division.
+            - Utility cost attribution uses period overlap — flag simple `createdAt` filter.
+
+            **Inventory on sale:**
+            - `SalesService.createTransaction()` deducts stock for every ingredient in every BOM.
+            - One `findOneAndUpdate` with `$inc` per ingredient — flag loop of find + save.
+            - Flag if insufficient stock is silently ignored with no decision about negative stock.
+
+            ### 9. ERROR HANDLING STRATEGY 🚨
+            - All services throw typed NestJS exceptions — no `throw new Error('message')`.
+            - Global HTTP exception filter at `src/common/filters/http-exception.filter.ts` should exist
+              to format errors into `ApiResponse` — flag if missing.
+            - Async errors in interceptors use RxJS `catchError` — not try/catch around `subscribe`.
+
+            ### 10. CONFIGURATION MANAGEMENT ⚙️
+            - All env values accessed via `ConfigService.get()` or `ConfigService.getOrThrow()`.
+            - No `process.env` access directly in service or controller code.
+            - `getOrThrow()` for required values (`JWT_SECRET`, `MONGODB_URI`).
+            - `get(key, defaultValue)` for optional config.
+
+            ### 11. SPRINT PLAN CONFORMANCE 📋
+            Sprint 1 DoD: Both apps start, DB connects, health returns 200, schemas with indexes,
+              UsersModule and OrganizationsModule have services.
+            Sprint 2 DoD: Register/login/refresh work, RBAC blocks unauthorised, tenant data isolated,
+              rate limiting active.
+            Sprint 3 DoD: Ingredient CRUD + price logging + stock. Recipe CRUD with embedded BOM.
+              Cross-tenant validation. COGS preview.
+            Verify this PR advances or completes the correct sprint items without skipping DoD criteria.
+
+            ## RESPONSE FORMAT
+            - Severity: 🔴 Critical Drift · 🟡 Structural Risk · 🔵 Suggestion.
+            - For each finding: file path, what the architecture requires vs what exists, concrete fix.
+            - If **Critical Drift** found, explicitly state: "⛔ This PR should be blocked until resolved."
+            - End with: Architectural Health Summary · Strengths · Top 3 priorities.
+
+            ## WHAT NOT TO COMMENT ON
+            - Correctly tenant-scoped queries and module boundaries already conforming to the design.
+            - Existing global guard / interceptor registration in `AppModule` (already correct).
+            - Properly embedded sub-documents matching the ERD.
