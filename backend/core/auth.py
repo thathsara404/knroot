@@ -3,8 +3,7 @@ from __future__ import annotations
 import logging
 from functools import wraps
 
-import jwt
-from flask import current_app, g, request
+from flask import g, redirect, session, url_for
 
 from backend.core.errors import UnauthorizedError
 
@@ -12,25 +11,24 @@ logger = logging.getLogger(__name__)
 
 
 def require_auth(f):
+    """Page-route guard: redirects unauthenticated browsers to /login."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            raise UnauthorizedError("Missing or invalid Authorization header")
-
-        token = auth_header[len("Bearer "):]
-        try:
-            payload = jwt.decode(
-                token,
-                current_app.config["SECRET_KEY"],
-                algorithms=["HS256"],
-            )
-        except jwt.ExpiredSignatureError:
-            raise UnauthorizedError("Token has expired")
-        except jwt.InvalidTokenError:
-            raise UnauthorizedError("Invalid token")
-
-        g.user_id = payload["sub"]
+        user_id = session.get('user_id')
+        if not user_id:
+            return redirect(url_for('pages.login'))
+        g.user_id = user_id
         return f(*args, **kwargs)
+    return decorated
 
+
+def require_api_auth(f):
+    """HTMX/JSON-endpoint guard: returns 401 JSON if session is missing."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        user_id = session.get('user_id')
+        if not user_id:
+            raise UnauthorizedError('Authentication required')
+        g.user_id = user_id
+        return f(*args, **kwargs)
     return decorated

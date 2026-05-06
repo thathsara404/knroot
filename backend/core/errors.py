@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
+
 from flask import jsonify
 
 logger = logging.getLogger(__name__)
@@ -40,7 +42,12 @@ class UnprocessableError(AppError):
     status_code = 422
     default_message = "Validation failed"
 
-    def __init__(self, message: str | None = None, fields: dict | None = None, detail: str | None = None):
+    def __init__(
+        self,
+        message: str | None = None,
+        fields: dict | None = None,
+        detail: str | None = None,
+    ):
         self.fields = {k: v for k, v in (fields or {}).items() if v is not None}
         super().__init__(message, detail)
 
@@ -57,10 +64,9 @@ def register_error_handlers(app):
     def handle_rate_limit(exc: RateLimitExceeded):
         return jsonify({"error": "Too many requests", "detail": str(exc.description)}), 429
 
-
     @app.errorhandler(AppError)
     def handle_app_error(exc: AppError):
-        body = {"error": exc.message}
+        body: dict[str, Any] = {"error": exc.message}
         if isinstance(exc, UnprocessableError) and exc.fields:
             body["fields"] = exc.fields
         if exc.detail and app.config.get("DEBUG"):

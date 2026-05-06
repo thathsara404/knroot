@@ -28,14 +28,6 @@ coverage.xml
 # Mypy
 .mypy_cache/
 
-# Node
-node_modules/
-frontend/node_modules/
-
-# Vite / build output
-frontend/dist/
-frontend/.vite/
-
 # Playwright
 e2e/test-results/
 e2e/playwright-report/

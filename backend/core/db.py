@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 from psycopg_pool import ConnectionPool
@@ -32,13 +31,13 @@ def get_pool() -> ConnectionPool:
 def query(sql: str, params: tuple = ()) -> list[dict]:
     with get_pool().connection() as conn:
         result = conn.execute(sql, params)
-        return result.fetchall()
+        return result.fetchall()  # type: ignore[return-value]
 
 
 def query_one(sql: str, params: tuple = ()) -> dict | None:
     with get_pool().connection() as conn:
         result = conn.execute(sql, params)
-        return result.fetchone()
+        return result.fetchone()  # type: ignore[return-value]
 
 
 def execute(sql: str, params: tuple = ()) -> None:
@@ -49,7 +48,7 @@ def execute(sql: str, params: tuple = ()) -> None:
 def execute_returning(sql: str, params: tuple = ()) -> dict:
     with get_pool().connection() as conn:
         result = conn.execute(sql, params)
-        return result.fetchone()
+        return result.fetchone()  # type: ignore[return-value]
 
 
 _MIGRATION_LOCK_ID = 7438291874  # stable bigint for pg_advisory_lock
@@ -95,7 +94,7 @@ def setup_langgraph_checkpointer() -> None:
     with get_pool().connection() as conn:
         conn.execute("SELECT pg_advisory_lock(%s)", (_MIGRATION_LOCK_ID,))
         try:
-            PostgresSaver(conn).setup()
+            PostgresSaver(conn).setup()  # type: ignore[arg-type]
             logger.info("LangGraph checkpointer tables ready")
         except UniqueViolation:
             logger.info("LangGraph checkpointer tables already initialised")

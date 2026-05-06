@@ -1,7 +1,9 @@
-version: '3.8'
-
 services:
+
+  # ── Development ────────────────────────────────────────────────────────────
+
   db:
+    profiles: [dev]
     image: postgres:16
     restart: unless-stopped
     environment:
@@ -19,10 +21,13 @@ services:
       retries: 5
 
   redis:
+    profiles: [dev]
     image: redis:7-alpine
     restart: unless-stopped
     ports:
       - "6379:6379"
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -30,6 +35,7 @@ services:
       retries: 5
 
   web:
+    profiles: [dev]
     build:
       context: .
       dockerfile: Dockerfile
@@ -41,9 +47,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENROUTER_MODEL=${OPENROUTER_MODEL:-deepseek/deepseek-chat}
-      - APP_URL=${APP_URL:-http://localhost:5000}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}
       - FLASK_ENV=${FLASK_ENV:-production}
     depends_on:
       db:
@@ -57,16 +61,66 @@ services:
       retries: 5
       start_period: 20s
 
-  frontend:
+  # ── E2E testing (isolated DB + Redis, app on port 5001) ────────────────────
+
+  db-e2e:
+    profiles: [e2e]
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - pgdata-e2e:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-e2e:
+    profiles: [e2e]
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata-e2e:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web-e2e:
+    profiles: [e2e]
     build:
-      context: ./frontend
+      context: .
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "3000:80"
+      - "5001:5000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db-e2e:5432/postgres
+      - REDIS_URL=redis://redis-e2e:6379/0
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-e2e-placeholder}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-deepseek/deepseek-chat}
+      - SESSION_SECRET_KEY=e2e-secret-not-for-production-use
+      - FLASK_ENV=development
+      - RATELIMIT_ENABLED=false
     depends_on:
-      web:
+      db-e2e:
         condition: service_healthy
+      redis-e2e:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
 
 volumes:
   pgdata:
+  redisdata:
+  pgdata-e2e:
+  redisdata-e2e:

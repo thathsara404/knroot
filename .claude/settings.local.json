@@ -8,7 +8,10 @@
       "Bash(git init *)",
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Bash(npx vitest *)",
+      "Bash(Remove-Item -Recurse -Force \"D:\\\\code-setup\\\\ai-agent\\\\frontend\" -ErrorAction SilentlyContinue)",
+      "Bash(Write-Host \"frontend/ removed\")"
     ]
   }
 }

@@ -3,7 +3,7 @@ from __future__ import annotations
 from flask import Blueprint, g, jsonify, request
 
 from backend.api.chat.service import auto_title_session, get_or_create_session, send_message
-from backend.core.auth import require_auth
+from backend.core.auth import require_api_auth as require_auth
 from backend.core.errors import UnprocessableError
 
 bp = Blueprint("chat", __name__)

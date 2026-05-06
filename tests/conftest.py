@@ -2,8 +2,7 @@ import os
 import sys
 from unittest.mock import MagicMock
 
-# Stub Python 3.9+ packages that can't be installed on 3.8.
-# Must happen before any backend module is imported.
+# Stub heavy packages before any backend module is imported.
 for _mod in [
     'langgraph',
     'langgraph.checkpoint',
@@ -18,17 +17,14 @@ for _mod in [
 ]:
     sys.modules.setdefault(_mod, MagicMock())
 
-# Must be set before any app code is imported
-os.environ.setdefault('JWT_SECRET_KEY', 'test-secret-key-do-not-use-in-prod')
+os.environ.setdefault('SESSION_SECRET_KEY', 'test-secret-key-do-not-use-in-prod')
 os.environ.setdefault('OPENROUTER_API_KEY', 'test-openrouter-key')
 os.environ.setdefault('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/testdb')
 os.environ.setdefault('REDIS_URL', 'redis://localhost:6379/1')
 os.environ.setdefault('FLASK_ENV', 'testing')
 
-import jwt
 import pytest
 import fakeredis
-from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
 import backend.extensions as ext
@@ -75,31 +71,19 @@ def reset_rate_limits(app):
 @pytest.fixture()
 def valid_user_payload() -> dict:
     return {
+        'first_name': 'Test',
+        'last_name': 'User',
         'username': 'testuser',
         'email': 'test@example.com',
         'password': 'SecurePass1',
-        'full_name': 'Test User',
+        'confirm_password': 'SecurePass1',
         'phone': '+1234567890',
     }
 
 
 @pytest.fixture()
-def access_token_for(app) -> callable:
-    """Factory: returns a valid JWT access token for any user_id string."""
-    def _make(user_id: str = 'user-uuid-1234') -> str:
-        return jwt.encode(
-            {
-                'sub': user_id,
-                'exp': datetime.now(timezone.utc) + timedelta(minutes=15),
-                'iat': datetime.now(timezone.utc),
-            },
-            app.config['SECRET_KEY'],
-            algorithm='HS256',
-        )
-    return _make
-
-
-@pytest.fixture()
-def auth_headers(access_token_for) -> dict:
-    """Authorization headers for a generic test user."""
-    return {'Authorization': f'Bearer {access_token_for()}'}
+def authed_client(client):
+    """Client fixture with a pre-set session for user-uuid-1234."""
+    with client.session_transaction() as sess:
+        sess['user_id'] = 'user-uuid-1234'
+    return client

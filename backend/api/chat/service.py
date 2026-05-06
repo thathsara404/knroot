@@ -9,7 +9,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 
 from backend.agent.graph import graph_builder
 from backend.api.news.service import get_news
-from backend.core.db import execute, execute_returning, get_pool, query_one
+from backend.core.db import execute, get_pool, query_one
 from backend.core.llm import build_llm_client
 from backend.agent.prompts import AUTO_TITLE_PROMPT
 
@@ -25,7 +25,7 @@ def _is_new_session(compiled, config: dict) -> bool:
 
 def send_message(user_id: int, session_id: str, user_msg: str) -> dict:
     with get_pool().connection() as conn:
-        checkpointer = PostgresSaver(conn)
+        checkpointer = PostgresSaver(conn)  # type: ignore[arg-type]
         compiled = graph_builder.compile(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": session_id}}
 
@@ -41,7 +41,7 @@ def send_message(user_id: int, session_id: str, user_msg: str) -> dict:
                     lines.append(f"> {a['summary']}")
             news_text = "\n".join(lines)
 
-        result = compiled.invoke(
+        result = compiled.invoke(  # type: ignore[call-overload]
             {
                 "messages": [HumanMessage(content=user_msg)],
                 "news_context": news_text,
@@ -86,7 +86,7 @@ def auto_title_session(session_id: str, first_user_msg: str, first_ai_reply: str
         first_ai_reply_excerpt=first_ai_reply[:300],
     )
     try:
-        title = llm.invoke(prompt).content.strip()[:80]
+        title = str(llm.invoke(prompt).content).strip()[:80]
         execute(
             "UPDATE chat_sessions SET title = %s WHERE id = %s",
             (title, session_id),

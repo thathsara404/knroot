@@ -2,7 +2,7 @@
 
 > Companion to `ARCHITECTURE.md`. Each phase maps to one Git branch, merged to `main` via PR after passing all automated reviews and tests.
 >
-> **Stack:** Flask (Python) · PostgreSQL · Redis · LangGraph · OpenRouter LLM · React 18 + TypeScript + Vite · Playwright E2E · pytest · Vitest
+> **Stack:** Flask (Python) · PostgreSQL · Redis · LangGraph · OpenRouter LLM · Jinja2 + HTMX + Alpine.js · Playwright E2E · pytest
 
 ---
 
@@ -15,8 +15,11 @@ All Python server code lives in the `backend/` package. When this plan refers to
 | Flask app factory | `backend/app.py` |
 | Config classes | `backend/config.py` |
 | Extension singletons | `backend/extensions.py` |
+| User domain model | `backend/domain/user.py` |
+| User repository | `backend/repositories/user_repository.py` |
 | Auth routes | `backend/api/auth/routes.py` |
 | Auth service | `backend/api/auth/service.py` |
+| Auth request schemas | `backend/api/auth/schemas.py` |
 | Sessions routes | `backend/api/sessions/routes.py` |
 | Sessions service | `backend/api/sessions/service.py` |
 | Chat routes | `backend/api/chat/routes.py` |
@@ -70,42 +73,26 @@ Merge only after all checks green and PR description references affected `PROGRE
 
 ## Test Strategy
 
-| Layer       | Tool                       | Location                      | When runs          |
-|-------------|----------------------------|-------------------------------|--------------------|
-| Backend unit| pytest + pytest-flask      | `tests/unit/`                 | `ci.yml` on PR     |
-| Frontend unit| Vitest + Testing Library   | `frontend/src/**/*.test.tsx`  | `ci.yml` on PR     |
-| E2E         | Playwright                 | `e2e/*.spec.ts`               | `ci.yml` on PR     |
-| Static analysis | flake8 + mypy (backend), ESLint + tsc (frontend) | inline | `ci.yml` on PR |
+| Layer           | Tool                  | Location              | When runs          |
+|-----------------|-----------------------|-----------------------|--------------------|
+| Backend unit    | pytest + pytest-flask | `tests/unit/`         | `ci.yml` on PR     |
+| Template/view   | pytest + Flask client | `tests/unit/test_pages.py` | `ci.yml` on PR |
+| E2E             | Playwright            | `e2e/*.spec.ts`       | `ci.yml` on PR     |
+| Static analysis | flake8 + mypy         | `backend/`            | `ci.yml` on PR     |
+
+No frontend unit tests (no React component logic to isolate). Template rendering is tested via the Flask test client in pytest (assert HTML response codes, content, redirects).
 
 **Backend test structure:**
 ```
 tests/
-  conftest.py          ← pytest fixtures: test app, test DB, test Redis client
+  conftest.py          ← pytest fixtures: test app, test DB, test Redis, auth helpers
   unit/
-    test_auth.py
+    test_auth.py       ← register/login/logout routes + service logic
+    test_pages.py      ← page routes: status codes, redirects, auth guards
     test_sessions.py
     test_news.py
     test_quiz.py
-  integration/         ← optional, hits real DB in CI using test container
-```
-
-**Frontend test structure:**
-```
-frontend/src/
-  pages/
-    Login.test.tsx
-    Register.test.tsx
-    Quiz.test.tsx
-  components/
-    ChatSidebar.test.tsx
-    NewsPanel.test.tsx
-    MCQCard.test.tsx
-  hooks/
-    useAuth.test.ts
-    useSessions.test.ts
-    useQuiz.test.ts
-  api/
-    auth.test.ts
+  integration/         ← optional, hits real DB in CI
 ```
 
 **E2E structure:**
@@ -130,39 +117,40 @@ Users can register, log in, refresh their session, and log out. All existing rou
 ```
 backend/app.py                         ← create_app() factory
 backend/config.py                      ← Config / DevelopmentConfig / ProductionConfig / TestingConfig
-backend/extensions.py                  ← db_pool, redis_client, limiter singletons
+backend/extensions.py                  ← db_pool, redis_client, limiter, session singletons
+backend/domain/__init__.py
+backend/domain/user.py                 ← User frozen dataclass + to_profile() method
+backend/repositories/__init__.py
+backend/repositories/user_repository.py  ← UserRepository class + user_repo module-level singleton
 backend/api/__init__.py
 backend/api/auth/__init__.py
-backend/api/auth/routes.py             ← Blueprint('/auth'): register, login, refresh, logout, me
-backend/api/auth/service.py            ← register_user(), login_user(), refresh_token(), logout()
+backend/api/auth/routes.py             ← Blueprint('/auth'): register, login, logout, me
+backend/api/auth/schemas.py            ← Pydantic v2: RegisterRequest, LoginRequest
+backend/api/auth/service.py            ← register_user(), login_user(), get_user() — uses user_repo
+backend/api/pages/__init__.py
+backend/api/pages/routes.py            ← Blueprint('pages'): /, /login, /register, /app, /quiz/<id>, /learn/<id>
 backend/core/__init__.py
-backend/core/auth.py                   ← @require_auth decorator, g.user_id injection
+backend/core/auth.py                   ← require_auth (page redirect), require_api_auth (401 JSON)
 backend/core/db.py                     ← query(), query_one(), execute(), run_migrations()
 backend/core/errors.py                 ← AppError hierarchy, register_error_handlers(app)
 backend/core/llm.py                    ← build_llm_client() factory
 backend/migrations/001_users.sql       ← users table DDL
+backend/templates/base.html            ← HTML shell: CDN links (HTMX, Alpine.js, Tailwind)
+backend/templates/auth/login.html      ← Login form (HTMX post, inline error swap)
+backend/templates/auth/register.html   ← Register form
 wsgi.py                                ← from backend.app import create_app; app = create_app()
-tests/conftest.py                      ← app fixture (TestingConfig), auth helpers
+tests/conftest.py                      ← app fixture (TestingConfig), authed_client fixture (session_transaction)
 tests/unit/test_auth.py
-frontend/src/pages/LoginPage.tsx
-frontend/src/pages/RegisterPage.tsx
-frontend/src/components/ProtectedRoute.tsx
-frontend/src/store/authStore.ts        ← Zustand: accessToken, user profile
-frontend/src/api/auth.ts               ← register/login/refresh/logout/me API calls
-frontend/src/hooks/useAuth.ts
-frontend/src/pages/LoginPage.test.tsx
-frontend/src/pages/RegisterPage.test.tsx
-frontend/src/hooks/useAuth.test.ts
+tests/unit/test_pages.py               ← page route status codes, redirects, auth guards
 e2e/auth.spec.ts
 ```
 
 ### Modified Files
 ```
-requirements.txt       ← add PyJWT, bcrypt, flask-limiter
-docker-compose.yml     ← add JWT_SECRET_KEY env var; Dockerfile CMD → gunicorn wsgi:app
-Dockerfile             ← update CMD to: gunicorn wsgi:app --bind 0.0.0.0:5000 --workers 4
-frontend/src/App.tsx   ← wrap routes with ProtectedRoute, add /login, /register
-frontend/src/api/client.ts ← attach Authorization header, intercept 401 → refresh
+requirements.txt       ← add flask-session, bcrypt, flask-limiter; remove PyJWT
+docker-compose.yml     ← add SESSION_SECRET_KEY env var; remove frontend service; Dockerfile CMD → gunicorn wsgi:app
+Dockerfile             ← CMD: gunicorn wsgi:app --bind 0.0.0.0:5000 --workers 4
+Makefile               ← replace package.json scripts with make targets
 ```
 
 ### Backend Tasks
@@ -184,146 +172,147 @@ CREATE INDEX idx_users_username ON users(username);
 ```
 Run migration in `app.py` startup (same pattern as `PostgresSaver.setup()`).
 
-#### 1.2 `backend/api/auth/service.py` — Business Logic + `routes.py` — Endpoints
+#### 1.2 `backend/domain/user.py`, `backend/repositories/user_repository.py`, `backend/api/auth/schemas.py`, `backend/api/auth/service.py`, `backend/api/auth/routes.py`
+
+**Domain model (`domain/user.py`):**
+- `User` is a frozen `@dataclass` — no Flask, no DB imports.
+- Fields: `id`, `username`, `email`, `full_name`, `created_at`, `phone` (optional).
+- `to_profile()` returns a dict safe for JSON serialisation (no password hash).
+
+**Repository (`repositories/user_repository.py`):**
+- `UserRepository` encapsulates all SQL; returns `User` objects, never raw dicts.
+- Methods: `find_by_id()`, `find_for_auth()` (returns `(User, hash)` or `None`), `exists_by_username()`, `exists_by_email()`, `create()`.
+- Module-level singleton: `user_repo = UserRepository()`.
+
+**Pydantic schemas (`api/auth/schemas.py`):**
+- `RegisterRequest` — validates username (3–50, `^[a-zA-Z0-9_]+$`), email (RFC 5322), phone (E.164 optional), full_name, password (≥ 8 chars, ≥ 1 digit, ≥ 1 letter) via `@model_validator(mode='after')`.
+- `LoginRequest` — validates `identifier` and `password` are non-empty.
+- On failure: `@model_validator` raises `ValueError(dict)` → route `_parse()` converts to `UnprocessableError(fields={...})`.
 
 **`POST /auth/register`**
-- Validate: username (3–50, `^[a-zA-Z0-9_]+$`), email (RFC 5322), phone (E.164 optional), full_name (1–100), password (≥ 8 chars, ≥ 1 digit, ≥ 1 letter).
-- Check unique username and email — return `409` on conflict with field-specific message.
-- `bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12))`.
-- Insert into `users`. Return `201` with profile (no hash).
+- Route calls `_parse(RegisterRequest, _get_data())`, then `auth_service.register_user(username, email, full_name, password, phone)`.
+- Service checks `user_repo.exists_by_username()` / `exists_by_email()` — raises `ConflictError` on conflict.
+- `bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12))` in service, then `user_repo.create(...)`.
+- `session['user_id'] = user.id`, `session.permanent = True`. HTMX: 204 + `HX-Redirect`. Browser: 302.
 
 **`POST /auth/login`**
-- Accept `identifier` (username OR email) + `password`.
-- Look up by username; if not found, try email.
-- `bcrypt.checkpw()` — constant-time comparison.
-- On success: issue access token (JWT, `sub=user_id`, `exp=now+15m`) and refresh token (JWT, `sub=user_id`, `jti=uuid`, `exp=now+7d`).
-- Store refresh token `jti` in Redis key `refresh:{jti}` with 7-day TTL.
-- Return access token in JSON; set refresh token in `HttpOnly; SameSite=Strict; Path=/auth/refresh` cookie.
+- Route calls `_parse(LoginRequest, _get_data())`, then `auth_service.login_user(identifier, password)`.
+- Service calls `user_repo.find_for_auth(identifier)` (tries username then email), `bcrypt.checkpw()`.
+- On success: set session, redirect. On failure: raise `UnauthorizedError`.
 
-**`POST /auth/refresh`**
-- Read refresh JWT from cookie.
-- Verify signature and expiry.
-- Check `redis.exists(f"refresh:{jti}")` — if missing, token was already rotated or revoked; return `401`.
-- Delete old `refresh:{jti}` from Redis (rotation).
-- Issue new access token + new refresh token (new `jti`). Store new `jti` in Redis.
+**`POST /auth/logout`**
+- `session.clear()` — deletes the server-side session from Redis. Redirect to `/login`.
 
-**`POST /auth/logout`** (requires auth)
-- Delete `refresh:{jti}` from Redis.
-- Clear the refresh cookie.
-
-**`GET /auth/me`** (requires auth)
-- Return user profile from `g.user_id`.
+**`GET /auth/me`** (requires `@require_api_auth`)
+- Return `auth_service.get_user(g.user_id).to_profile()` as JSON.
 
 #### 1.3 `backend/core/auth.py`
 ```python
 def require_auth(f):
-    # Decode Authorization: Bearer <token>
-    # On valid token: g.user_id = payload['sub']
-    # On invalid/missing: raise UnauthorizedError (registered_error_handlers converts to 401)
+    # Page routes: redirect to /login if session missing
+    # Sets g.user_id = session['user_id']
+
+def require_api_auth(f):
+    # HTMX/JSON endpoints: return 401 JSON if session missing
 ```
 Rate limit `/auth/login` and `/auth/register` via `limiter` from `backend/extensions.py`.
 
-### Frontend Tasks
+### Template Tasks
 
-#### 1.4 Routes
-Add React Router. Route map:
+#### 1.4 Page Routes (`backend/api/pages/routes.py`)
+```python
+GET /       → redirect to /app if session active, else /login
+GET /login  → render auth/login.html
+GET /register → render auth/register.html
+GET /app    → render app/index.html  [require_auth]
 ```
-/              → redirect based on auth state
-/login         → <Login />
-/register      → <Register />
-/app           → <ProtectedRoute><App /></ProtectedRoute>
+
+#### 1.5 `backend/templates/base.html`
+Include in `<head>`:
+```html
+<script src="https://unpkg.com/htmx.org@2/dist/htmx.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+<link rel="stylesheet" href="https://cdn.tailwindcss.com">
 ```
+Layout: nav bar with username + logout button (if session active), `{% block content %}`.
 
-#### 1.5 `authStore.ts` (Zustand)
-```ts
-interface AuthState {
-  accessToken: string | null
-  user: UserProfile | null
-  setTokens(access: string, user: UserProfile): void
-  clearAuth(): void
-}
+#### 1.6 `backend/templates/auth/login.html`
+Fields: identifier (label: "Username or Email"), password (Alpine.js show/hide toggle).
+```html
+<form hx-post="/auth/login" hx-target="#form-error" hx-swap="innerHTML">
+  <div id="form-error"></div>
+  ...
+</form>
 ```
-Persist `accessToken` to `sessionStorage` (not `localStorage` — clears on tab close).
+On success: server sends `HX-Redirect: /app`. On failure: server returns error HTML fragment.
 
-#### 1.6 `api/client.ts` Interceptors
-- Attach `Authorization: Bearer <token>` to every request.
-- On `401`: call `POST /auth/refresh` once, update store, retry original request.
-- On second `401`: clear auth, redirect to `/login`.
-
-#### 1.7 Login Page
-Fields: identifier (label: "Username or Email"), password.
-On success: store token, navigate to `/app`.
-Show field-level errors from API.
-
-#### 1.8 Register Page
-Fields: full_name, username, email, phone (optional), password, confirm_password.
-Client-side validation before submit (match password, regex checks).
-On success: auto-login (store token from register response), navigate to `/app`.
+#### 1.7 `backend/templates/auth/register.html`
+Fields: full_name, username, email, phone (optional), password + confirm_password (both with show/hide).
+Client-side password-match validation via Alpine.js before HTMX submit.
+On success: server sets session, sends `HX-Redirect: /app`.
 
 ### Unit Tests
 
 #### Backend — `tests/unit/test_auth.py`
 ```python
-# Fixtures in conftest.py:
-#   app_client: Flask test client with in-memory/test-DB
-#   valid_user_payload: dict with all required fields
+# Key fixtures in conftest.py:
+#   client: Flask test client (TestingConfig — no Redis session, cookie session)
+#   authed_client: client with session['user_id'] pre-set via session_transaction()
+#   valid_user_payload: dict with all required registration fields
+#
+# Mocking pattern — patch the repository singleton, NOT raw DB helpers:
+#   REPO = 'backend.repositories.user_repository.user_repo'
+#   mocker.patch(f'{REPO}.exists_by_username', return_value=False)
+#   mocker.patch(f'{REPO}.create', return_value=_USER)  # _USER is a User domain object
 
-def test_register_success(app_client, valid_user_payload): ...
-def test_register_duplicate_username_returns_409(app_client, valid_user_payload): ...
-def test_register_duplicate_email_returns_409(app_client, valid_user_payload): ...
-def test_register_weak_password_returns_422(app_client): ...
-def test_register_invalid_email_returns_422(app_client): ...
-def test_login_success_returns_access_token(app_client, seeded_user): ...
-def test_login_by_email_succeeds(app_client, seeded_user): ...
-def test_login_wrong_password_returns_401(app_client, seeded_user): ...
-def test_login_unknown_user_returns_401(app_client): ...
-def test_refresh_issues_new_token(app_client, logged_in_client): ...
-def test_refresh_with_rotated_token_returns_401(app_client, logged_in_client): ...
-def test_logout_invalidates_refresh_token(app_client, logged_in_client): ...
-def test_protected_route_without_token_returns_401(app_client): ...
-def test_protected_route_with_valid_token_succeeds(app_client, logged_in_client): ...
-def test_rate_limit_on_login(app_client): ...
+def test_register_success_redirects(client, valid_user_payload, mocker): ...          # 302
+def test_register_success_sets_session(client, valid_user_payload, mocker): ...        # sess['user_id']
+def test_register_htmx_returns_204_with_hx_redirect(client, valid_user_payload, mocker): ...
+def test_register_duplicate_username_returns_409(client, valid_user_payload, mocker): ...
+def test_register_duplicate_email_returns_409(client, valid_user_payload, mocker): ...
+def test_register_weak_password_returns_422(client): ...
+def test_register_invalid_email_returns_422(client): ...
+def test_register_invalid_username_returns_422(client): ...
+def test_register_invalid_phone_returns_422(client): ...
+def test_register_missing_full_name_returns_422(client): ...
+def test_login_success_redirects(client, mocker): ...
+def test_login_success_sets_session(client, mocker): ...
+def test_login_htmx_returns_204_with_hx_redirect(client, mocker): ...
+def test_login_by_email_succeeds(client, mocker): ...
+def test_login_wrong_password_returns_401(client, mocker): ...
+def test_login_unknown_user_returns_401(client, mocker): ...
+def test_login_missing_fields_returns_422(client): ...
+def test_logout_clears_session(authed_client): ...
+def test_logout_without_session_still_redirects(client): ...
+def test_logout_htmx_returns_204_with_hx_redirect(authed_client): ...
+def test_me_without_session_returns_401(client): ...
+def test_me_with_session_returns_profile(authed_client, mocker): ...
+def test_me_user_not_found_returns_401(authed_client, mocker): ...
+def test_rate_limit_on_login(client): ...
 ```
 
-#### Frontend — `src/pages/Login.test.tsx`
-```ts
-test('renders identifier and password fields')
-test('shows validation error for empty submit')
-test('calls login API with correct payload')
-test('stores token and redirects on success')
-test('displays API error message on failure')
-test('links to register page')
-```
-
-#### Frontend — `src/pages/Register.test.tsx`
-```ts
-test('renders all required fields')
-test('validates password confirmation mismatch')
-test('validates username format')
-test('submits correct payload to register API')
-test('auto-logs in and redirects on success')
-test('shows field-level server errors')
-```
-
-#### Frontend — `src/hooks/useAuth.test.ts`
-```ts
-test('initial state has null token and user')
-test('setTokens updates store')
-test('clearAuth resets store')
-test('401 response triggers refresh then retry')
-test('failed refresh redirects to login')
+#### Page Routes — `tests/unit/test_pages.py`
+```python
+def test_index_redirects_unauthenticated_to_login(client): ...
+def test_index_renders_for_authenticated_user(authed_client): ...
+def test_login_page_returns_200(client): ...
+def test_register_page_returns_200(client): ...
+def test_app_page_requires_auth_redirects_to_login(client): ...
+def test_app_page_returns_200_when_authenticated(authed_client): ...
+def test_login_page_redirects_already_authenticated(authed_client): ...
+def test_register_page_redirects_already_authenticated(authed_client): ...
 ```
 
 ### E2E Tests — `e2e/auth.spec.ts`
 ```ts
-test('user can register with valid data')
-test('register with existing username shows error')
+test('user can register with valid data and is redirected to /app')
+test('register with existing username shows inline error')
 test('user can log in with username')
 test('user can log in with email')
-test('wrong password shows error')
-test('logged-out user redirected from /app to /login')
+test('wrong password shows inline error')
+test('unauthenticated user redirected from /app to /login')
 test('user can log out and cannot access /app')
-test('session persists on page reload')
+test('session cookie persists across page reloads')
 ```
 
 ---
@@ -1247,18 +1236,13 @@ Every PR triggers `.github/workflows/ci.yml`:
 │  (flake8, mypy)                               │         │
 │                                               ▼         │
 │  test-backend  ──────────────────────────► all-pass?   │
-│  (pytest --cov=. --cov-fail-under=80)         │         │
-│                                               │         │
-│  lint-frontend ──────────────────────────────┤         │
-│  (eslint, tsc --noEmit)                       │         │
-│                                               │         │
-│  test-frontend ──────────────────────────────┤         │
-│  (vitest --coverage --coverage-threshold=80)  │         │
+│  (pytest --cov=backend --cov-fail-under=80)   │         │
 │                                               │         │
 │  e2e           ──────────────────────────────┘         │
 │  (playwright, docker-compose up, run specs)             │
 └─────────────────────────────────────────────────────────┘
 ```
 
-Coverage thresholds: **80% line coverage** for both backend and frontend.
-E2E smoke: runs full-flow spec; individual specs run per-phase branch.
+No separate frontend lint or test jobs — Flask/Python linting covers all application code. Tailwind, HTMX, and Alpine.js are CDN-loaded and have no local build artefacts to lint.
+
+Coverage threshold: **80% line coverage** for backend (agent, LLM, and unimplemented blueprint code is excluded via `.coveragerc`).

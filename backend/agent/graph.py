@@ -52,7 +52,7 @@ def build_graph() -> StateGraph:
         messages = [SystemMessage(content=system_content)] + list(state["messages"])
         response = llm.invoke(messages)
 
-        clean_text, topics = _extract_topics(response.content)
+        clean_text, topics = _extract_topics(str(response.content))
         response.content = clean_text
 
         return {

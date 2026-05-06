@@ -2,7 +2,7 @@
 
 > **Scope:** Reshaping the existing AI chat agent into a full-featured tech-learning platform with authentication, chat history, smart news caching, and an adaptive knowledge-check system.
 >
-> **Baseline stack:** Flask · PostgreSQL · LangGraph · OpenRouter LLM · React + TypeScript + Vite · Docker Compose
+> **Baseline stack:** Flask · PostgreSQL · LangGraph · OpenRouter LLM · Jinja2 + HTMX + Alpine.js · Docker Compose
 
 ---
 
@@ -21,29 +21,29 @@ A focused **AI-powered tech learning companion** where users can:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                          Browser (React)                          │
+│                   Browser (HTMX + Alpine.js)                      │
 │                                                                    │
 │  ┌─────────────┐   ┌────────────────────────┐   ┌─────────────┐  │
 │  │  Left Pane  │   │     Chat Interface      │   │ Right Pane  │  │
 │  │  Chat List  │   │  (Tech Learning Chat)   │   │  AI News    │  │
-│  │             │   │  [Check Knowledge ▶]    │   │  Feed       │  │
+│  │  (HTMX)     │   │  [Check Knowledge ▶]    │   │  (HTMX)     │  │
 │  └─────────────┘   └────────────────────────┘   └─────────────┘  │
 │                                  │                                 │
 │                    ┌─────────────▼────────────┐                   │
 │                    │  Knowledge Check Tab      │                   │
-│                    │  (MCQ Interface)          │                   │
+│                    │  (MCQ Interface, HTMX)    │                   │
 │                    └──────────────────────────┘                   │
 └───────────────────────────┬──────────────────────────────────────┘
-                            │ HTTPS / REST + JSON
+                            │ HTTPS (full pages + HTMX partial requests)
 ┌───────────────────────────▼──────────────────────────────────────┐
-│                      Flask API (Python)                            │
+│             Flask (Python) — Jinja2 SSR + REST API                │
 │                                                                    │
-│  /auth/*     /sessions/*     /chat/*     /news     /quiz/*        │
+│  /pages/*    /auth/*    /sessions/*    /chat/*    /news    /quiz/*│
 └──────┬──────────────┬──────────────┬──────────────┬──────────────┘
        │              │              │              │
   ┌────▼────┐   ┌─────▼─────┐  ┌───▼───┐   ┌─────▼──────┐
   │  Auth   │   │  Session  │  │LangG- │   │   Redis    │
-  │  (JWT)  │   │  Manager  │  │raph   │   │   Cache    │
+  │(Session)│   │  Manager  │  │raph   │   │(Cache+Sess)│
   └────┬────┘   └─────┬─────┘  └───┬───┘   └─────┬──────┘
        │              │            │              │
   ┌────▼──────────────▼────────────▼──────────────▼──────┐
@@ -56,18 +56,20 @@ A focused **AI-powered tech learning companion** where users can:
 
 ## 3. Tech Stack
 
-| Layer         | Technology                            | Rationale                                                     |
-|---------------|---------------------------------------|---------------------------------------------------------------|
-| Frontend      | React 18 + TypeScript + Vite          | Existing; fast HMR, strong typing                             |
-| Routing       | React Router v6                       | SPA routing for auth pages and quiz tab                       |
-| Styling       | Tailwind CSS                          | Existing utility-first design system                          |
-| Backend       | Flask 3 (Python)                      | Existing; lightweight, familiar                               |
-| Auth          | JWT (PyJWT) + bcrypt                  | Stateless access tokens, secure password hashing              |
-| AI Chat       | LangGraph + OpenRouter                | Existing; graph-based agent with persistent checkpointing     |
-| MCQ Generation| OpenRouter LLM (separate call)        | Reuse existing LLM key; dedicated prompt chain                |
-| Cache         | Redis 7                               | Sub-millisecond reads; TTL-native; separates fast-path state  |
-| Database      | PostgreSQL 16                         | Existing; adds user, session, and quiz tables                 |
-| Container     | Docker Compose                        | Existing; add Redis service                                   |
+| Layer         | Technology                            | Rationale                                                               |
+|---------------|---------------------------------------|-------------------------------------------------------------------------|
+| Templates     | Jinja2 (Flask built-in)               | Server-side rendering; no npm, no build step, no separate process       |
+| Interactivity | HTMX                                  | Partial page updates via HTML-over-the-wire; loaded from CDN            |
+| Client state  | Alpine.js (CDN)                       | Lightweight reactivity for toggles, tabs, dropdowns — no framework      |
+| Styling       | Tailwind CSS (CDN)                    | Utility-first CSS; CDN removes all Node.js/npm from the stack           |
+| Backend       | Flask 3 (Python)                      | Serves both Jinja2 pages and REST/HTMX partial responses                |
+| Validation    | Pydantic v2                           | Request schema validation at the HTTP boundary; `@model_validator` for cross-field rules |
+| Auth          | Flask-Session + Redis + bcrypt        | Server-side sessions stored in Redis; signed cookie; simpler than JWT for SSR |
+| AI Chat       | LangGraph + OpenRouter                | Existing; graph-based agent with persistent checkpointing               |
+| MCQ Generation| OpenRouter LLM (separate call)        | Reuse existing LLM key; dedicated prompt chain                          |
+| Cache/Session | Redis 7                               | Shared for news cache (day/hour TTL) and Flask-Session storage          |
+| Database      | PostgreSQL 16                         | Existing; adds user, session, and quiz tables                           |
+| Container     | Docker Compose                        | Single web service — no separate frontend container required            |
 
 ---
 
@@ -84,10 +86,17 @@ ai-agent/
 │   ├── config.py                       ← Config / DevelopmentConfig / ProductionConfig / TestingConfig
 │   ├── extensions.py                   ← db_pool, redis_client, limiter, scheduler — single instances
 │   │
+│   ├── domain/                         ← Pure Python domain models — no Flask, no DB, no business logic
+│   │   └── user.py                     ← User frozen dataclass + to_profile() method
+│   │
+│   ├── repositories/                   ← All SQL encapsulated here; returns domain objects
+│   │   └── user_repository.py          ← UserRepository class + module-level user_repo singleton
+│   │
 │   ├── api/                            ← One sub-package per API domain; each has its own Blueprint
 │   │   ├── auth/
 │   │   │   ├── routes.py               ← Blueprint('/auth') — thin handlers, no business logic
-│   │   │   └── service.py              ← register_user(), login_user(), refresh_token(), logout()
+│   │   │   ├── schemas.py              ← Pydantic v2 request schemas: RegisterRequest, LoginRequest
+│   │   │   └── service.py              ← register_user(), login_user(), get_user()
 │   │   ├── sessions/
 │   │   │   ├── routes.py
 │   │   │   └── service.py              ← create_session(), list_sessions(), rename(), delete(), get_messages()
@@ -126,6 +135,26 @@ ai-agent/
 │       ├── 004_mcq_attempts.sql
 │       └── 005_session_hierarchy.sql
 │
+├── backend/templates/                  ← Jinja2 HTML templates (served by Flask directly)
+│   ├── base.html                       ← HTML shell: head with CDN links, nav, flash messages
+│   ├── auth/
+│   │   ├── login.html
+│   │   └── register.html
+│   ├── app/
+│   │   └── index.html                  ← 3-pane layout (sidebar + chat + news)
+│   ├── learn/
+│   │   └── session.html                ← Learning tab (sidebar + chat + knowledge tree)
+│   ├── quiz/
+│   │   └── attempt.html
+│   └── partials/                       ← HTMX partial responses (HTML fragments)
+│       ├── session_list.html
+│       ├── message.html
+│       ├── news_panel.html
+│       └── quiz_card.html
+│
+├── backend/static/                     ← Served at /static/ — minimal custom JS only
+│   └── app.js
+│
 ├── tests/                              ← pytest — at project root, imports from backend.*
 │   ├── conftest.py                     ← app fixture (TestingConfig), test DB, fakeredis, auth helpers
 │   └── unit/
@@ -136,7 +165,6 @@ ai-agent/
 │       ├── test_discuss.py
 │       └── test_quiz.py
 │
-├── frontend/                           ← React 18 + TypeScript (Vite)
 ├── e2e/                                ← Playwright E2E specs
 ├── docs/                               ← Architecture, implementation plan, progress tracker
 ├── .claude/agents/platform-dev.md     ← Claude Code sub-agent for this project
@@ -147,11 +175,14 @@ ai-agent/
 
 | File | Owns | Must NOT contain |
 |------|------|-----------------|
-| `backend/api/*/routes.py` | HTTP parsing, input validation, response serialisation | SQL, LLM calls, Redis ops, business logic |
-| `backend/api/*/service.py` | Business logic, DB queries, orchestration | `request`, `g` (accepts `user_id` as parameter) |
+| `backend/domain/*.py` | Immutable data models (`@dataclass(frozen=True)`), `to_*()`  serialisation helpers | Flask imports, SQL, business logic |
+| `backend/repositories/*.py` | All SQL for a domain; returns domain objects | `request`, `g`, business logic, LLM calls |
+| `backend/api/*/schemas.py` | Pydantic request validation at the HTTP boundary | SQL, Redis ops, domain logic |
+| `backend/api/*/routes.py` | HTTP parsing, schema validation via `_parse()`, response serialisation | SQL, LLM calls, Redis ops, business logic |
+| `backend/api/*/service.py` | Business logic, orchestration; calls repositories | `request`, `g` (accepts `user_id` as parameter); no raw SQL |
 | `backend/agent/graph.py` | LangGraph graph only | Route code, DB queries |
 | `backend/agent/prompts.py` | Prompt string constants | Any logic |
-| `backend/core/auth.py` | `@require_auth` decorator | Business logic beyond token validation |
+| `backend/core/auth.py` | `@require_auth` / `@require_api_auth` decorators; sets `g.user_id` from session | Business logic beyond session validation |
 | `backend/core/db.py` | Connection pool helpers | Domain logic |
 | `backend/core/llm.py` | LLM client factory | Prompt strings (those live in prompts.py) |
 | `backend/migrations/*.sql` | DDL (CREATE/ALTER/INDEX) | DML (INSERT/UPDATE/DELETE) |
@@ -220,9 +251,11 @@ CREATE TABLE news_cache (
 
 ## 5. Authentication
 
+Authentication uses **server-side session cookies** via Flask-Session backed by Redis. No JWT issuance, no refresh token rotation — the session stores the user ID directly in Redis; the browser receives only a signed session ID cookie.
+
 ### 5.1 Registration — `POST /auth/register`
 
-**Request body:**
+**Request (HTML form or JSON):**
 ```json
 {
   "full_name": "Alice Smith",
@@ -234,14 +267,15 @@ CREATE TABLE news_cache (
 ```
 
 **Server logic:**
-1. Validate all fields (username: 3–50 chars, alphanumeric+underscore; email: RFC 5322; phone: E.164; password: min 8 chars, at least one number).
+1. Validate all fields (username: 3–50 chars, alphanumeric+underscore; email: RFC 5322; phone: E.164 optional; password: min 8 chars, at least one digit).
 2. Hash password with `bcrypt` (cost factor 12).
 3. Insert into `users`.
-4. Return `201` with the user profile (no password hash).
+4. `session['user_id'] = str(user['id'])`, `session.permanent = True`.
+5. On success: redirect to `/app` (PRG pattern). On HTMX request, return `HX-Redirect: /app` header. On failure: re-render form with error context, or return HTML error fragment.
 
 ### 5.2 Login — `POST /auth/login`
 
-**Request body:**
+**Request (HTML form or JSON):**
 ```json
 { "identifier": "alicesmith",  "password": "••••••••" }
 ```
@@ -249,17 +283,57 @@ CREATE TABLE news_cache (
 
 **Server logic:**
 1. Look up user by username OR email.
-2. `bcrypt.checkpw(password, hash)`.
-3. Issue **access token** (JWT, 15 min expiry) and **refresh token** (JWT, 7 days expiry).
-4. Return access token in JSON body; set refresh token as `HttpOnly; SameSite=Strict` cookie.
+2. `bcrypt.checkpw(password, hash)` — constant-time comparison.
+3. `session['user_id'] = str(user['id'])`, `session.permanent = True`.
+4. Redirect to `/app`. On failure: re-render login template with error message.
 
-### 5.3 Token Refresh — `POST /auth/refresh`
+### 5.3 Logout — `POST /auth/logout`
 
-Uses the HttpOnly refresh cookie; returns a new access token. Refresh tokens are single-use (rotation); old token is invalidated in a `refresh_tokens` blocklist stored in Redis.
+`session.clear()` — this deletes the session data from Redis. Redirect to `/login`.
 
-### 5.4 Middleware
+### 5.4 Session Storage (Flask-Session + Redis)
 
-Every protected route checks the `Authorization: Bearer <token>` header. The decoded `sub` (user UUID) is injected into `flask.g.user_id` for downstream handlers.
+```python
+# backend/config.py
+SESSION_TYPE = 'redis'               # stored in Redis, not in the cookie
+SESSION_COOKIE_NAME = 'knroot_sess'
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_SECURE = True         # False in development
+PERMANENT_SESSION_LIFETIME = timedelta(days=7)
+SESSION_USE_SIGNER = True            # HMAC-sign the session ID
+SESSION_REFRESH_EACH_REQUEST = True  # renew TTL on every request
+```
+
+The cookie contains only a signed session ID. The payload (`user_id`) lives in Redis under key `session:<id>`. Session expiry is enforced by Redis TTL.
+
+### 5.5 Auth Middleware (`backend/core/auth.py`)
+
+Two decorators — one for page routes (redirects), one for HTMX/API endpoints (returns 401):
+
+```python
+def require_auth(f):
+    """Page routes — redirects to /login if unauthenticated."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('pages.login'))
+        g.user_id = session['user_id']
+        return f(*args, **kwargs)
+    return decorated
+
+def require_api_auth(f):
+    """HTMX/JSON endpoints — returns 401 JSON if unauthenticated."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({"error": "Unauthorized"}), 401
+        g.user_id = session['user_id']
+        return f(*args, **kwargs)
+    return decorated
+```
+
+`g.user_id` is set exclusively from the server-side session — never from client-supplied request data.
 
 ---
 
@@ -490,15 +564,18 @@ Conversation:
 
 ## 9. Frontend Architecture
 
-### 9.1 Page / Route Map
+Flask serves all HTML pages through Jinja2 templates. Dynamic interactions use HTMX for partial page replacements without full reloads. Client-side reactivity (toggles, tabs, dropdowns) uses Alpine.js. Tailwind CSS is loaded from CDN. No Node.js, npm, or build step required.
+
+### 9.1 Page / Route Map (`backend/api/pages/routes.py`)
 
 ```
-/                  → redirect to /login or /app based on auth
-/login             → Login page
-/register          → Registration page
-/app               → Main 3-pane layout (protected)
-/app/session/:id   → Auto-select specific session in left pane
-/quiz/:attemptId   → Knowledge Check tab (opens in new tab)
+GET /                   → redirect to /app if session active, else /login
+GET /login              → render auth/login.html
+GET /register           → render auth/register.html
+GET /app                → render app/index.html  [require_auth]
+GET /app/session/<id>   → render app/index.html, preload session  [require_auth]
+GET /learn/<id>         → render learn/session.html  [require_auth]
+GET /quiz/<id>          → render quiz/attempt.html  [require_auth]
 ```
 
 ### 9.2 Three-Pane Layout
@@ -508,75 +585,94 @@ Conversation:
 │  LEFT PANE   │       CENTRE PANE          │  RIGHT PANE  │
 │  240px fixed │  flex-1, min-w-0           │  320px fixed │
 │              │                            │              │
-│ ● New Chat   │  ┌──────────────────────┐  │  AI News     │
-│              │  │   Message Thread     │  │              │
-│ Today        │  │                      │  │  [HuggingFace│
-│ ├ LoRA fine- │  │  User: What is ...   │  │   Blog]      │
-│ │  tuning..  │  │  AI: ...             │  │  Introducing │
-│ ├ Docker net │  │                      │  │  SmolVLM     │
-│              │  └──────────────────────┘  │  > ...       │
-│ Yesterday    │                            │              │
-│ ├ Attention  │  ┌──────────────────────┐  │  [ArXiv ML]  │
-│   mechanisms │  │   Input Bar          │  │  Flash Att.  │
-│              │  └──────────────────────┘  │  3.0         │
-│              │                            │              │
-│              │  [Check Knowledge ▶]       │              │
+│ ● New Chat   │  Message thread            │  AI News     │
+│              │  (HTMX beforeend swap      │  (HTMX load  │
+│ Session list │   on chat submit)          │   on mount)  │
+│ (HTMX load)  │                            │              │
+│              │  Chat input bar            │  Tab group:  │
+│              │  (hx-post=/chat)           │  AI / Prog / │
+│              │                            │  Political   │
+│              │  [Check Knowledge ▶]       │  (Alpine.js) │
 └──────────────┴────────────────────────────┴──────────────┘
 ```
 
-**Left pane** — `ChatSidebar`:
+**Left pane** — `partials/session_list.html` (HTMX-loaded):
 - Groups sessions by: Today / Yesterday / This Week / Older.
-- Session item: `title` (auto or user-set) + relative timestamp.
-- Long-press or right-click → rename / delete.
-- Skeleton loaders while fetching.
+- Session item: title (auto or user-set) + relative timestamp.
+- Rename / delete via inline HTMX forms.
+- Skeleton placeholder rendered server-side while loading.
 
-**Centre pane** — `ChatInterface`:
-- Existing `MessageList` + `InputBar`.
-- "Check Knowledge" button appears below `InputBar` once there are ≥ 3 AI responses in the session.
-- Button opens `/quiz/:attemptId` in `window.open('...', '_blank')`.
+**Centre pane** — `partials/message.html` (HTMX appended):
+- "Check Knowledge" button rendered when session has ≥ 3 AI messages.
+- Button opens `/quiz/<attempt_id>` in a new tab (`target="_blank"`).
 
-**Right pane** — `NewsPanel`:
-- Grouped by source.
-- Timestamp badge shows article age (e.g. "2h ago").
-- Pull-to-refresh / manual refresh button triggers `GET /news?force=true`.
-- Skeleton loaders on first load.
+**Right pane** — `partials/news_panel.html` (HTMX-loaded):
+- News tab group controlled by Alpine.js `x-data`.
+- Each tab triggers `hx-get=/news/partial?category=<tab>` on activate.
 
-### 9.3 Knowledge Check Tab (`/quiz/:attemptId`)
+### 9.3 HTMX Interaction Patterns
 
+**Login/Register (Post → Redirect → Get):**
+```html
+<form hx-post="/auth/login" hx-target="#form-error" hx-swap="innerHTML">
+  ...
+</form>
 ```
-┌──────────────────────────────────────────────────────┐
-│  Knowledge Check  ·  LoRA fine-tuning on LLaMA 3     │
-│                              Score: —/8  [Submit]    │
-├──────────────────────────────────────────────────────┤
-│  Q1. Which technique reduces trainable parameters... │
-│                                                       │
-│  ○ A  Full fine-tuning                               │
-│  ● B  Low-Rank Adaptation (LoRA)    ← selected       │
-│  ○ C  Prefix tuning                                   │
-│  ○ D  Prompt tuning                                   │
-│                                                       │
-│  Q2. ...                                              │
-│  ...                                                  │
-├──────────────────────────────────────────────────────┤
-│  [Retry]                          [Back to Chat]     │
-└──────────────────────────────────────────────────────┘
+Success: server returns `HX-Redirect: /app` header → browser navigates.
+Failure: server returns HTML error fragment → HTMX swaps into `#form-error`.
+
+**Chat submission:**
+```html
+<form hx-post="/chat" hx-target="#messages" hx-swap="beforeend"
+      hx-on::after-request="this.reset()">
+  <input type="hidden" name="session_id" value="{{ session_id }}">
+  <textarea name="message" required></textarea>
+  <button type="submit">Send</button>
+</form>
+```
+`POST /chat` returns a rendered `partials/message.html` fragment containing both the user message and the AI response.
+
+**Quiz MCQ auto-save:**
+```html
+<input type="radio" name="q_01" value="1"
+       hx-post="/quiz/attempt/{{ attempt_id }}/answer"
+       hx-vals='{"question_id": "q_01", "option": 1}'
+       hx-trigger="change">
 ```
 
-After submit:
-- Correct answers turn green, wrong selections turn red with the correct option highlighted.
-- Score badge updates: `Score: 6/8`.
-- `[Retry]` resets selections; questions are the same.
+### 9.4 Alpine.js for Client State
 
-### 9.4 State Management
+```html
+<!-- Show/hide password -->
+<div x-data="{ show: false }">
+  <input :type="show ? 'text' : 'password'" name="password">
+  <button @click="show = !show" type="button" :aria-label="show ? 'Hide' : 'Show'">
+    <span x-text="show ? 'Hide' : 'Show'"></span>
+  </button>
+</div>
 
-| Concern              | Solution                                              |
-|----------------------|-------------------------------------------------------|
-| Auth tokens          | `useAuthStore` (Zustand) + `localStorage` for access  |
-| Refresh token        | HttpOnly cookie (browser manages automatically)        |
-| Session list         | React Query (auto refetch on window focus)             |
-| Active chat messages | React Query keyed by `session_id`                     |
-| News                 | React Query, `staleTime: 60_000` (1 min client-side)  |
-| Quiz state           | Local component state + auto-save effect               |
+<!-- News tab group -->
+<div x-data="{ tab: 'ai' }">
+  <button @click="tab = 'ai'" :class="{'active': tab === 'ai'}">AI</button>
+  <button @click="tab = 'programming'" :class="{'active': tab === 'programming'}">Programming</button>
+  <div x-show="tab === 'ai'"
+       hx-get="/news/partial?category=ai" hx-trigger="intersect once"></div>
+  <div x-show="tab === 'programming'"
+       hx-get="/news/partial?category=programming" hx-trigger="intersect once"></div>
+</div>
+```
+
+### 9.5 State Management
+
+| Concern              | Solution                                                    |
+|----------------------|-------------------------------------------------------------|
+| Auth / current user  | Flask session (server-side, Redis-backed cookie)            |
+| Session list         | HTMX loads `/sessions/partial` on mount + on session create |
+| Active chat messages | HTMX loads `/sessions/<id>/messages/partial` on select      |
+| News content         | HTMX loads `/news/partial?category=<tab>` on tab activate   |
+| Active news tab      | Alpine.js `x-data` local state                              |
+| Quiz answers         | HTMX POST on each selection; server stores in DB            |
+| UI state             | Alpine.js `x-data` per component (toggles, dropdowns)       |
 
 ---
 
@@ -585,34 +681,33 @@ After submit:
 | Method | Path                           | Auth | Description                              |
 |--------|--------------------------------|------|------------------------------------------|
 | POST   | `/auth/register`               | —    | Register new user                        |
-| POST   | `/auth/login`                  | —    | Login, receive JWT + refresh cookie      |
-| POST   | `/auth/refresh`                | —    | Rotate refresh token, return new access  |
-| POST   | `/auth/logout`                 | JWT  | Invalidate refresh token                 |
-| GET    | `/auth/me`                     | JWT  | Current user profile                     |
-| GET    | `/sessions`                    | JWT  | List user's chat sessions                |
-| POST   | `/sessions`                    | JWT  | Create session                           |
-| PATCH  | `/sessions/{id}`               | JWT  | Rename session                           |
-| DELETE | `/sessions/{id}`               | JWT  | Delete session                           |
-| POST   | `/chat`                        | JWT  | Send message in session                  |
-| GET    | `/sessions/{id}/messages`      | JWT  | Full message history                     |
-| GET    | `/news`                        | JWT  | Cached + fresh news feed                 |
-| POST   | `/quiz/generate`               | JWT  | Generate MCQs for a session              |
-| GET    | `/quiz/attempt/{id}`           | JWT  | Load saved quiz state                    |
-| PUT    | `/quiz/attempt/{id}`           | JWT  | Auto-save answers                        |
-| POST   | `/quiz/retry`                  | JWT  | Create new attempt (same questions)      |
-| GET    | `/quiz/attempts`               | JWT  | List past attempts for a session         |
+| POST   | `/auth/login`                  | —       | Login, set session cookie, redirect to /app |
+| POST   | `/auth/logout`                 | Session | Clear session, redirect to /login           |
+| GET    | `/auth/me`                     | Session | Current user profile (JSON)                 |
+| GET    | `/sessions`                    | Session | List user's chat sessions                |
+| POST   | `/sessions`                    | Session | Create session                           |
+| PATCH  | `/sessions/{id}`               | Session | Rename session                           |
+| DELETE | `/sessions/{id}`               | Session | Delete session                           |
+| POST   | `/chat`                        | Session | Send message in session                  |
+| GET    | `/sessions/{id}/messages`      | Session | Full message history                     |
+| GET    | `/news`                        | Session | Cached + fresh news feed                 |
+| POST   | `/quiz/generate`               | Session | Generate MCQs for a session              |
+| GET    | `/quiz/attempt/{id}`           | Session | Load saved quiz state                    |
+| PUT    | `/quiz/attempt/{id}`           | Session | Auto-save answers                        |
+| POST   | `/quiz/retry`                  | Session | Create new attempt (same questions)      |
+| GET    | `/quiz/attempts`               | Session | List past attempts for a session         |
 
 ---
 
-## 11. Docker Compose Changes
+## 11. Docker Compose
+
+The frontend container is removed. Flask now serves both the API and HTML pages from one process. The `web` service is the only application container.
 
 ```yaml
 services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
     volumes:
       - redisdata:/data
@@ -623,17 +718,14 @@ services:
   web:
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - JWT_ACCESS_EXPIRES_MINUTES=15
-      - JWT_REFRESH_EXPIRES_DAYS=7
+      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}   # signs session cookies
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - FLASK_ENV=${FLASK_ENV:-production}
     depends_on:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
-
-  frontend:
-    # unchanged
+        condition: service_healthy
 
 volumes:
   pgdata:
@@ -642,16 +734,19 @@ volumes:
 
 ---
 
-## 12. New Python Dependencies
+## 12. Python Dependencies
 
 ```
-# Add to requirements.txt
-PyJWT>=2.8
-bcrypt>=4.1
-redis>=5.0
+# requirements.txt
+flask>=3.0
+flask-session>=0.8      # server-side sessions backed by Redis
+bcrypt>=4.1             # password hashing (cost factor 12)
+redis>=5.0              # session storage + news cache
 APScheduler>=3.10       # hourly news promotion job
 flask-limiter>=3.5      # rate limiting on auth endpoints
 ```
+
+`PyJWT` is removed — session cookies replace JWT entirely.
 
 ---
 
@@ -659,13 +754,14 @@ flask-limiter>=3.5      # rate limiting on auth endpoints
 
 | Risk                        | Mitigation                                                        |
 |-----------------------------|-------------------------------------------------------------------|
-| Brute-force login           | `flask-limiter`: 5 attempts/min per IP on `/auth/login`          |
-| Token theft                 | Short-lived access tokens (15 min); refresh token in HttpOnly cookie |
-| Password storage            | `bcrypt` with cost factor 12                                      |
-| IDOR on sessions/quizzes    | Every DB query filters by `user_id` from JWT — never from body   |
-| Prompt injection in MCQ gen | Conversation text is base64-encoded in the prompt context block  |
-| News cache poisoning        | RSS feeds are fixed constants; no user-controlled URLs            |
-| XSS                         | React escapes by default; `dangerouslySetInnerHTML` is avoided    |
+| Brute-force login           | `flask-limiter`: 5 attempts/min per IP on `/auth/login`                      |
+| Session hijacking           | Sessions stored server-side in Redis; signed cookie ID; `HttpOnly`+`Secure`  |
+| CSRF                        | Flask-WTF CSRF tokens on all state-changing forms; HTMX includes `X-CSRFToken` header |
+| Password storage            | `bcrypt` with cost factor 12                                                  |
+| IDOR on sessions/quizzes    | Every DB query filters by `user_id` from `g.user_id` (set from session) — never from body |
+| Prompt injection in MCQ gen | Conversation text wrapped in `<conversation>…</conversation>` delimiter       |
+| News cache poisoning        | RSS feeds are fixed constants in `feeds.py`; no user-controlled URLs          |
+| XSS                         | Jinja2 auto-escapes all template variables by default; `| safe` only for trusted content |
 
 ---
 
@@ -1256,12 +1352,12 @@ ALTER TABLE mcq_attempts
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/news?category={ai\|programming\|political}` | JWT | Category-filtered cached news |
-| POST | `/news/discuss` | JWT | Create discussion session from article |
-| POST | `/sessions/{id}/learn-more` | JWT | Create learn_more sub-session |
-| GET | `/sessions/{id}/tree` | JWT | Full ancestry chain (root → current) |
-| POST | `/quiz/generate-hierarchical` | JWT | MCQs spanning full ancestor path |
-| GET | `/quiz/attempt/{id}/relearn/{question_id}` | JWT | AI relearn explanation for wrong answer |
+| GET | `/news?category={ai\|programming\|political}` | Session | Category-filtered cached news |
+| POST | `/news/discuss` | Session | Create discussion session from article |
+| POST | `/sessions/{id}/learn-more` | Session | Create learn_more sub-session |
+| GET | `/sessions/{id}/tree` | Session | Full ancestry chain (root → current) |
+| POST | `/quiz/generate-hierarchical` | Session | MCQs spanning full ancestor path |
+| GET | `/quiz/attempt/{id}/relearn/{question_id}` | Session | AI relearn explanation for wrong answer |
 
 ### Updated Existing Endpoints
 
@@ -1272,52 +1368,47 @@ ALTER TABLE mcq_attempts
 
 ---
 
-## 23. Updated Frontend Architecture
+## 23. Phase 6 Frontend Architecture (SSR)
 
-### 23.1 New Routes
+### 23.1 New Page Routes
 
 ```
-/app               → main app (regular + news_discussion sessions, news right pane)
-/learn/:sessionId  → learning sub-thread tab (knowledge tree right pane)
-/quiz/:attemptId   → quiz page (both flat and hierarchical)
-/login             → Login (unchanged)
-/register          → Register (unchanged)
+GET /app               → main app (sidebar + chat + news tab group)
+GET /learn/<sessionId> → learning sub-thread (sidebar + chat + knowledge tree)
+GET /quiz/<attemptId>  → quiz page (full-width MCQ cards)
+GET /login             → Login
+GET /register          → Register
 ```
 
 ### 23.2 Right Pane Strategy
 
-| Route | Session type visible | Right pane |
-|-------|---------------------|-----------|
-| `/app` | regular OR news_discussion | `NewsPanel` (tab group: AI / Programming / Political) |
-| `/learn/:id` | learn_more | `KnowledgeTree` |
-| `/quiz/:id` | — | N/A (quiz is full-width) |
+| Route | Session type visible | Right pane template |
+|-------|---------------------|---------------------|
+| `/app` | regular OR news_discussion | `partials/news_panel.html` (tab group: AI / Programming / Political) |
+| `/learn/<id>` | learn_more | `partials/knowledge_tree.html` |
+| `/quiz/<id>` | — | N/A (full-width) |
 
-### 23.3 New & Updated Components
+### 23.3 New Templates and Partials
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| `NewsTabs.tsx` | `components/` | Tab group wrapper (AI / Programming / Political) |
-| `NewsArticleCard.tsx` | `components/` | Article card with Discuss button |
-| `SectionedMessage.tsx` | `components/` | Renders sectioned AI response with Learn More buttons |
-| `KnowledgeTree.tsx` | `components/` | Visual hierarchy tree for right pane of `/learn` |
-| `TreeNode.tsx` | `components/` | Single node in the hierarchy tree |
-| `RelearPanel.tsx` | `components/` | Wrong-answer explanation card in quiz |
-| `ChatSidebar.tsx` | `components/` | Updated: nested `learn_more` sessions under parents |
-| `useDiscuss.ts` | `hooks/` | POST /news/discuss, open sub-session |
-| `useLearnMore.ts` | `hooks/` | POST /sessions/{id}/learn-more, open new tab |
-| `useSessionTree.ts` | `hooks/` | GET /sessions/{id}/tree |
-| `useHierarchicalQuiz.ts` | `hooks/` | POST /quiz/generate-hierarchical, relearn |
+| Template | Purpose |
+|----------|---------|
+| `partials/news_tabs.html` | Tab group: AI / Programming / Political (Alpine.js tabs + HTMX per-tab load) |
+| `partials/news_article_card.html` | Article card with Discuss button (HTMX post) |
+| `partials/sectioned_message.html` | Sectioned AI response with Learn More buttons |
+| `partials/knowledge_tree.html` | Visual hierarchy tree (server-rendered nodes) |
+| `partials/relearn_panel.html` | Wrong-answer explanation (HTMX lazy-load) |
+| `partials/session_list.html` | Updated: nested learn_more sessions under parents |
 
-### 23.4 Updated State Management
+### 23.4 Phase 6 State Management
 
 | Concern | Solution |
 |---------|---------|
-| Active news tab | Local state in `NewsTabs` (no persistence needed) |
-| Discuss loading state | `useDiscuss` hook local state |
-| Learn More loading per section | Map of `{sectionId: loading\|done}` in `SectionedMessage` |
-| Knowledge tree | React Query keyed by `['tree', sessionId]` |
-| Hierarchical quiz | `useHierarchicalQuiz` hook (same pattern as `useQuiz`) |
-| Relearn explanations | React Query keyed by `['relearn', attemptId, questionId]` |
+| Active news tab | Alpine.js `x-data` local state |
+| Discuss loading state | HTMX `hx-indicator` on the Discuss button |
+| Learn More loading per section | Alpine.js per-button state `{loading, opened}` |
+| Knowledge tree | Server-rendered via `GET /sessions/<id>/tree`; HTMX on mount |
+| Hierarchical quiz | Same HTMX MCQ pattern; `POST /quiz/generate-hierarchical` |
+| Relearn explanations | HTMX lazy-load `GET /quiz/attempt/<id>/relearn/<q_id>` on expand |
 
 ---
 

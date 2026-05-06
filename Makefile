@@ -1,141 +1,103 @@
-.PHONY: help \
-        up down build logs restart \
-        up-infra up-backend up-frontend \
-        start-backend start-frontend \
-        test test-backend-unit test-backend-integration test-frontend-unit test-e2e \
-        lint lint-backend lint-frontend \
-        db-shell redis-shell
+VENV  := $(HOME)/.venvs/knroot
+PIP   := $(VENV)/bin/pip
+PYTEST := $(VENV)/bin/pytest
+FLASK := $(VENV)/bin/flask
+FLAKE8 := $(VENV)/bin/flake8
+MYPY  := $(VENV)/bin/mypy
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# HELP
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-help:
-	@echo ""
-	@echo "  AI Learning Platform — developer commands"
-	@echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-	@echo ""
-	@echo "  DOCKER (full stack)"
-	@echo "    make up                   Build and start all services (db, redis, web, frontend)"
-	@echo "    make down                 Stop and remove containers"
-	@echo "    make build                Rebuild Docker images without cache"
-	@echo "    make restart              down + up"
-	@echo "    make logs                 Tail logs from all services"
-	@echo ""
-	@echo "  DOCKER (infra only — for local dev)"
-	@echo "    make up-infra             Start only DB + Redis (use with local flask/vite)"
-	@echo ""
-	@echo "  LOCAL DEV (no Docker for app processes)"
-	@echo "    make start-backend        Flask dev server (requires up-infra first)"
-	@echo "    make start-frontend       Vite dev server"
-	@echo ""
-	@echo "  TESTS"
-	@echo "    make test-backend-unit    pytest tests/unit/  (no DB, fakeredis)"
-	@echo "    make test-backend-int     pytest tests/integration/ (test DB + fakeredis)"
-	@echo "    make test-frontend        Vitest + RTL (cd frontend)"
-	@echo "    make test-e2e             Playwright (full stack must be running)"
-	@echo "    make test                 unit + integration + frontend (no e2e)"
-	@echo ""
-	@echo "  LINT"
-	@echo "    make lint-backend         flake8 + mypy"
-	@echo "    make lint-frontend        eslint + tsc"
-	@echo "    make lint                 both"
-	@echo ""
-	@echo "  UTILS"
-	@echo "    make db-shell             psql into the running DB container"
-	@echo "    make redis-shell          redis-cli into the running Redis container"
-	@echo ""
+.PHONY: init \
+        up-dev down-dev restart-dev logs-dev build-dev \
+        up-e2e down-e2e logs-e2e test-e2e-fresh \
+        up-infra backend \
+        playwright-install test-unit test-int test-e2e test \
+        lint shell-db shell-redis
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# DOCKER — FULL STACK
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ── Setup ─────────────────────────────────────────────────────────────────────
 
-up:
-	docker compose up --build -d
-	@echo ""
-	@echo "  Stack is up:"
-	@echo "    Backend   → http://localhost:5000"
-	@echo "    Frontend  → http://localhost:3000"
-	@echo ""
+init:
+	python3 -m venv $(VENV)
+	$(PIP) install --upgrade pip -q
+	$(PIP) install -r requirements-dev.txt -q
+	@echo "Setup complete. Activate: source $(VENV)/bin/activate"
 
-down:
-	docker compose down
+# ── Development environment (port 5000) ───────────────────────────────────────
 
-build:
-	docker compose build --no-cache
+up-dev:
+	docker compose --profile dev up --build -d
 
-restart: down up
+down-dev:
+	docker compose --profile dev down
 
-logs:
-	docker compose logs -f
+restart-dev:
+	docker compose --profile dev down && docker compose --profile dev up --build -d
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# DOCKER — INFRA ONLY (DB + Redis for local dev)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+logs-dev:
+	docker compose --profile dev logs -f
+
+build-dev:
+	docker compose --profile dev build --no-cache
 
 up-infra:
-	docker compose up db redis -d
-	@echo ""
-	@echo "  DB    → localhost:5432"
-	@echo "  Redis → localhost:6379"
-	@echo ""
-	@echo "  Now run:  make start-backend   (in one terminal)"
-	@echo "            make start-frontend  (in another)"
-	@echo ""
+	docker compose --profile dev up db redis -d
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# LOCAL DEV SERVERS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+shell-db:
+	docker compose --profile dev exec db psql -U postgres -d postgres
 
-start-backend:
-	FLASK_ENV=development flask --app wsgi:app run --debug --port 5000
+shell-redis:
+	docker compose --profile dev exec redis redis-cli
 
-start-frontend:
-	cd frontend && npm run dev
+backend:
+	FLASK_ENV=development $(FLASK) --app wsgi:app run --debug --port 5000
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TESTS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ── E2E environment (isolated DB + Redis, port 5001) ─────────────────────────
 
-test-backend-unit:
-	pytest tests/unit/ -v \
-	  --cov=backend \
-	  --cov-report=term-missing \
-	  --cov-fail-under=80
+up-e2e:
+	docker compose --profile e2e up --build -d
 
-test-backend-int:
-	pytest tests/integration/ -v \
-	  --cov=backend \
-	  --cov-append \
-	  --cov-report=term-missing
+down-e2e:
+	docker compose --profile e2e down
 
-test-frontend:
-	cd frontend && npm run test:unit
+logs-e2e:
+	docker compose --profile e2e logs -f
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+
+playwright-install:
+	$(VENV)/bin/playwright install chromium
+	sudo $(VENV)/bin/playwright install-deps chromium
+
+test-unit:
+	$(PYTEST) tests/unit/ -v --cov=backend --cov-report=term-missing --cov-fail-under=80
+
+test-int:
+	$(PYTEST) tests/integration/ -v --cov=backend --cov-append --cov-report=term-missing --cov-fail-under=80
 
 test-e2e:
-	npx playwright test --config=e2e/playwright.config.ts
+	docker compose --profile e2e logs -f --no-log-prefix web-e2e > e2e-server.log 2>&1 & \
+	LOG_PID=$$!; \
+	BASE_URL=$${BASE_URL:-http://localhost:5001} $(PYTEST) e2e/ -v; \
+	EXIT=$$?; \
+	kill $$LOG_PID 2>/dev/null || true; \
+	echo "Server logs saved to e2e-server.log"; \
+	exit $$EXIT
 
-test: test-backend-unit test-backend-int test-frontend
+test-e2e-fresh:
+	docker compose --profile e2e down
+	docker compose --profile e2e build --no-cache
+	docker compose --profile e2e up -d
+	sleep 5
+	docker compose --profile e2e logs -f --no-log-prefix web-e2e > e2e-server.log 2>&1 & \
+	LOG_PID=$$!; \
+	BASE_URL=$${BASE_URL:-http://localhost:5001} $(PYTEST) e2e/ -v; \
+	EXIT=$$?; \
+	kill $$LOG_PID 2>/dev/null || true; \
+	echo "Server logs saved to e2e-server.log"; \
+	exit $$EXIT
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# LINT
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+test: test-unit test-int
 
-lint-backend:
-	flake8 backend/ wsgi.py --max-line-length=100
-	mypy backend/ wsgi.py --ignore-missing-imports
+# ── Lint ──────────────────────────────────────────────────────────────────────
 
-lint-frontend:
-	cd frontend && npm run lint
-	cd frontend && npm run typecheck
-
-lint: lint-backend lint-frontend
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# UTILS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-db-shell:
-	docker compose exec db psql -U postgres -d postgres
-
-redis-shell:
-	docker compose exec redis redis-cli
+lint:
+	$(FLAKE8) backend/ wsgi.py --max-line-length=100
+	$(MYPY) backend/ wsgi.py --ignore-missing-imports

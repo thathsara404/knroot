@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import redis
+from flask import Flask
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
@@ -16,5 +17,14 @@ def init_redis(redis_url: str) -> redis.Redis:
 
 def get_redis() -> redis.Redis:
     if redis_client is None:
-        raise RuntimeError("Redis not initialised — call init_redis() first")
+        raise RuntimeError('Redis not initialised — call init_redis() first')
     return redis_client
+
+
+def init_session(app: Flask, redis_url: str) -> None:
+    from flask_session import Session
+    # Flask-Session serialises session data as binary (msgpack); decode_responses=True
+    # would cause UnicodeDecodeError when reading those bytes back from Redis.
+    session_redis = redis.from_url(redis_url, decode_responses=False)
+    app.config['SESSION_REDIS'] = session_redis
+    Session(app)

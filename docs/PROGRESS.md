@@ -10,7 +10,7 @@
 
 | Phase | Branch | Status | Tests | PR |
 |-------|--------|--------|-------|----|
-| 1 — Auth | `feature/auth` | ⏳ Not Started | ⏳ | — |
+| 1 — Auth | `feature/auth` | 🔄 In Progress | unit ✅ (30/30, 80%+) · e2e ⏳ | — |
 | 2 — Session Management | `feature/session-management` | ⏳ Not Started | ⏳ | — |
 | 3 — Smart News Cache | `feature/smart-news-cache` | ⏳ Not Started | ⏳ | — |
 | 4 — Knowledge Check | `feature/knowledge-check` | ⏳ Not Started | ⏳ | — |
@@ -22,74 +22,93 @@
 ## Phase 1 — Authentication (`feature/auth`)
 
 ### Infrastructure
-- [ ] Add `PyJWT`, `bcrypt`, `flask-limiter` to `requirements.txt`
-- [ ] Add `JWT_SECRET_KEY` env var to `docker-compose.yml` and `.env-example`
-- [ ] Add React Router, Zustand, `sonner` to `frontend/package.json`
+- [x] Add `flask-session`, `pydantic`, `bcrypt`, `flask-limiter` to `requirements.txt` (removed `PyJWT`)
+- [x] Add `SESSION_SECRET_KEY` env var to `docker-compose.yml` and `.env-example`
+- [x] Create `requirements-unit.txt` for unit test dependencies (fakeredis, pytest-mock, etc.)
+- [x] Create `Makefile` with `test-unit`, `up`, `down`, `logs`, `backend`, `shell-db`, `shell-redis` targets
+- [x] Create `.coveragerc` to omit agent/LLM/unimplemented blueprints from coverage measurement
 
 ### Database
-- [ ] Write `migrations/001_users.sql` (users table + indexes)
-- [ ] Wire migration into `app.py` startup sequence
+- [x] Write `backend/migrations/001_users.sql` (users table + indexes)
+- [ ] Wire migration into `app.py` startup sequence (needs DB connection in dev/prod)
 
-### Backend — `auth.py`
-- [ ] `POST /auth/register` — validation, bcrypt hash, insert, return profile
-- [ ] `POST /auth/login` — lookup by username or email, bcrypt verify, issue JWT pair
-- [ ] `POST /auth/refresh` — cookie read, Redis jti check, rotate token
-- [ ] `POST /auth/logout` — delete jti from Redis, clear cookie
-- [ ] `GET /auth/me` — return user profile from g.user_id
+### Domain & Repository Layer
+- [x] `backend/domain/user.py` — `User` frozen dataclass + `to_profile()` serialisation helper
+- [x] `backend/repositories/user_repository.py` — `UserRepository` class with all user SQL + `user_repo` module-level singleton
 
-### Backend — `middleware/auth.py`
-- [ ] `@require_auth` decorator — decode Bearer token, set `g.user_id`
-- [ ] Apply rate limiting: 10 req/min on `/auth/login`, 10 req/min on `/auth/register`
-- [ ] Apply `@require_auth` to `/chat` and `/news`
+### Pydantic Schemas
+- [x] `backend/api/auth/schemas.py` — `RegisterRequest`, `LoginRequest` with `@model_validator` cross-field validation
 
-### Frontend
-- [ ] Configure React Router (`/login`, `/register`, `/app`)
-- [ ] `src/store/authStore.ts` — Zustand store with access token + user profile
-- [ ] `src/api/auth.ts` — register, login, refresh, logout, me calls
-- [ ] `src/api/client.ts` — attach Bearer header, 401 → refresh → retry interceptor
-- [ ] `src/hooks/useAuth.ts`
-- [ ] `src/pages/Login.tsx` — form, validation, error display
-- [ ] `src/pages/Register.tsx` — form, client-side validation, auto-login on success
-- [ ] `src/components/ProtectedRoute.tsx` — redirect to /login if no token
+### Backend — Auth Routes & Service
+- [x] `backend/api/auth/service.py` — `register_user()`, `login_user()`, `get_user()` — calls `user_repo`, returns `User`
+- [x] `POST /auth/register` — Pydantic validation, bcrypt hash, session set, PRG redirect / HTMX 204+HX-Redirect
+- [x] `POST /auth/login` — username or email lookup, bcrypt verify, session set, PRG / HTMX
+- [x] `POST /auth/logout` — `session.clear()`, redirect to `/login`
+- [x] `GET /auth/me` — returns `user.to_profile()` JSON (requires `@require_api_auth`)
+- [x] Rate limiting: `3/min` on `/auth/register`, `10/min` on `/auth/login`
 
-### Backend Unit Tests (`tests/unit/test_auth.py`)
-- [ ] `test_register_success`
-- [ ] `test_register_duplicate_username_returns_409`
-- [ ] `test_register_duplicate_email_returns_409`
-- [ ] `test_register_weak_password_returns_422`
-- [ ] `test_register_invalid_email_returns_422`
-- [ ] `test_login_success_returns_access_token`
-- [ ] `test_login_by_email_succeeds`
-- [ ] `test_login_wrong_password_returns_401`
-- [ ] `test_login_unknown_user_returns_401`
-- [ ] `test_refresh_issues_new_token`
-- [ ] `test_refresh_with_rotated_token_returns_401`
-- [ ] `test_logout_invalidates_refresh_token`
-- [ ] `test_protected_route_without_token_returns_401`
-- [ ] `test_protected_route_with_valid_token_succeeds`
-- [ ] `test_rate_limit_on_login`
+### Backend — Auth Middleware
+- [x] `backend/core/auth.py` — `require_auth` (page redirect) + `require_api_auth` (401 JSON); sets `g.user_id` from `session['user_id']`
 
-### Frontend Unit Tests
-- [ ] `Login.test.tsx` — 6 test cases (see IMPLEMENTATION_PLAN.md §1.7)
-- [ ] `Register.test.tsx` — 6 test cases
-- [ ] `useAuth.test.ts` — 5 test cases
+### Backend — Page Routes
+- [x] `backend/api/pages/routes.py` — `GET /`, `GET /login`, `GET /register` (redirects if already authed), `GET /app` (requires `@require_auth`)
+
+### Templates & Static
+- [x] `backend/templates/base.html` — HTML shell with HTMX, Alpine.js, Tailwind CDN
+- [x] `backend/templates/auth/login.html` — HTMX form, Alpine.js password toggle, `HX-Redirect` handler
+- [x] `backend/templates/auth/register.html` — HTMX form, Alpine.js password toggle
+- [x] `backend/templates/app/index.html` — dashboard with nav and sign-out
+- [x] `backend/static/app.js` — HTMX global config + `HX-Redirect` full-navigation handler
+
+### Flask App Factory
+- [x] `backend/app.py` — `create_app()` factory with blueprints, extensions, error handlers; Flask-Session skipped when TESTING
+- [x] `backend/config.py` — `Config`, `DevelopmentConfig`, `ProductionConfig`, `TestingConfig`
+- [x] `backend/extensions.py` — `redis_client`, `limiter`, `init_session()`
+
+### Backend Unit Tests
+- [x] `tests/conftest.py` — `client`, `authed_client` (session_transaction), `valid_user_payload`, rate-limit reset fixture
+- [x] `test_register_success_redirects` (302)
+- [x] `test_register_success_sets_session`
+- [x] `test_register_htmx_returns_204_with_hx_redirect`
+- [x] `test_register_duplicate_username_returns_409`
+- [x] `test_register_duplicate_email_returns_409`
+- [x] `test_register_weak_password_returns_422`
+- [x] `test_register_invalid_email_returns_422`
+- [x] `test_register_invalid_username_returns_422`
+- [x] `test_register_invalid_phone_returns_422`
+- [x] `test_register_missing_full_name_returns_422`
+- [x] `test_login_success_redirects`
+- [x] `test_login_success_sets_session`
+- [x] `test_login_htmx_returns_204_with_hx_redirect`
+- [x] `test_login_by_email_succeeds`
+- [x] `test_login_wrong_password_returns_401`
+- [x] `test_login_unknown_user_returns_401`
+- [x] `test_login_missing_fields_returns_422`
+- [x] `test_logout_clears_session`
+- [x] `test_logout_without_session_still_redirects`
+- [x] `test_logout_htmx_returns_204_with_hx_redirect`
+- [x] `test_me_without_session_returns_401`
+- [x] `test_me_with_session_returns_profile`
+- [x] `test_me_user_not_found_returns_401`
+- [x] `test_rate_limit_on_login`
+- [x] `tests/unit/test_pages.py` — page route status codes, redirects, auth guards
 
 ### E2E Tests (`e2e/auth.spec.ts`)
-- [ ] `user can register with valid data`
-- [ ] `register with existing username shows error`
+- [ ] `user can register with valid data and is redirected to /app`
+- [ ] `register with existing username shows inline error`
 - [ ] `user can log in with username`
 - [ ] `user can log in with email`
-- [ ] `wrong password shows error`
-- [ ] `logged-out user redirected from /app to /login`
+- [ ] `wrong password shows inline error`
+- [ ] `unauthenticated user redirected from /app to /login`
 - [ ] `user can log out and cannot access /app`
-- [ ] `session persists on page reload`
+- [ ] `session cookie persists across page reloads`
 
 ### Phase 1 Acceptance Criteria
-- [ ] All unit tests pass with ≥ 80% coverage
-- [ ] All E2E tests pass
-- [ ] GitHub Actions (code-review, security-review, architecture-review, ci) all green
-- [ ] No secrets in code or `.env` committed
-- [ ] PR description references all ✅ items above
+- [x] All unit tests pass — 30/30, coverage ≥ 80% (`make test-unit`)
+- [ ] All E2E tests pass (`make test-e2e`)
+- [ ] GitHub Actions (ci, code-review, security-review, architecture-review) all green on PR
+- [x] No secrets in code or `.env` committed
+- [ ] PR merged to `main` with description referencing all ✅ items above
 
 ---
 
@@ -432,4 +451,6 @@
 | 2026-05-04 | Architecture document created | Baseline before implementation |
 | 2026-05-04 | Implementation plan created | Defines all tasks, tests, branches |
 | 2026-05-04 | Phase 6 added: News tabs (AI/Programming/Political), Discuss button, sectioned AI responses, Learn More sub-threads, knowledge tree, hierarchical MCQ with relearn | New product requirement |
+| 2026-05-05 | Frontend rewritten from React/Vite/TypeScript SPA to Flask SSR (Jinja2 + HTMX + Alpine.js). Auth changed from JWT to Flask-Session + Redis. `frontend/` directory and its Dockerfile removed. Makefile added to replace package.json scripts. | VirtualBox shared folder (vboxsf) cannot create symlinks, breaking npm install. SSR eliminates all Node.js/npm toolchain requirements. Python-only stack is simpler to operate. |
+| 2026-05-06 | Added enterprise architecture layers: `backend/domain/` (frozen dataclasses), `backend/repositories/` (all SQL encapsulated, returns domain objects), `backend/api/auth/schemas.py` (Pydantic v2 request validation). Service functions now call `user_repo` and return `User` domain objects. | Flask best practice for business-grade apps: clean separation of HTTP boundary (schemas), business logic (services), data access (repositories), and domain models. Prevents raw dicts leaking across layers and makes tests mock-friendly. |
 | — | _(add as decisions are made during implementation)_ | — |
