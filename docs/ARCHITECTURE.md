@@ -130,10 +130,12 @@ ai-agent/
 │   │
 │   └── migrations/                     ← Idempotent SQL DDL, run in order at startup
 │       ├── 001_users.sql
-│       ├── 002_chat_sessions.sql
+│       ├── 002_chat_sessions.sql       ← sessions table + full hierarchy columns
 │       ├── 003_news_cache.sql
-│       ├── 004_mcq_attempts.sql
-│       └── 005_session_hierarchy.sql
+│       ├── 004_mcq_attempts.sql        ← includes scope_sessions + relearn_cache columns
+│       ├── 005_session_messages.sql
+│       ├── 006_cascade_fk.sql
+│       └── 007_quiz_session.sql        ← adds linked_attempt_id to chat_sessions
 │
 ├── backend/templates/                  ← Jinja2 HTML templates (served by Flask directly)
 │   ├── base.html                       ← HTML shell: head with CDN links, nav, flash messages
@@ -147,13 +149,23 @@ ai-agent/
 │   ├── quiz/
 │   │   └── attempt.html
 │   └── partials/                       ← HTMX partial responses (HTML fragments)
-│       ├── session_list.html
-│       ├── message.html
-│       ├── news_panel.html
-│       └── quiz_card.html
+│       ├── session_list.html           ← Sidebar session tree with hierarchy + green-dot indicator
+│       ├── message.html                ← Single chat message bubble
+│       ├── messages.html               ← Full message history list (session replay)
+│       ├── sectioned_message.html      ← Sectioned AI response (Explore / Learn More)
+│       ├── news_panel.html             ← 3-tab news panel (AI / Dev / World)
+│       ├── topic_news_panel.html       ← Topic-filtered news articles partial
+│       ├── knowledge_tree.html         ← Knowledge tree node list
+│       ├── knowledge_tree_panel.html   ← Right-pane knowledge tree wrapper
+│       ├── quiz_section.html           ← Per-section inline quiz cards
+│       ├── quiz_inline.html            ← Full inline quiz loaded into #chat-messages
+│       └── fact_check_report.html      ← ADK fact-check verdict card
 │
 ├── backend/static/                     ← Served at /static/ — minimal custom JS only
-│   └── app.js
+│   ├── app.js                          ← Alpine appState() + all HTMX event wiring
+│   ├── quiz.js                         ← quizState() / quizStateInline() Alpine components
+│   ├── auth.js                         ← Login/register page helpers
+│   └── toast.js                        ← Lightweight toast notification helper
 │
 ├── tests/                              ← pytest — at project root, imports from backend.*
 │   ├── conftest.py                     ← app fixture (TestingConfig), test DB, fakeredis, auth helpers
@@ -208,18 +220,28 @@ CREATE TABLE users (
 ### 4.2 `chat_sessions`
 ```sql
 CREATE TABLE chat_sessions (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         UUID REFERENCES users(id) ON DELETE CASCADE,
-    thread_id       VARCHAR(255) UNIQUE NOT NULL,   -- LangGraph thread_id
-    title           VARCHAR(255),                   -- NULL = auto-generate from content
-    created_at      TIMESTAMPTZ DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ DEFAULT NOW(),
-    last_message_at TIMESTAMPTZ DEFAULT NOW()
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id           UUID REFERENCES users(id) ON DELETE CASCADE,
+    thread_id         VARCHAR(255) UNIQUE NOT NULL DEFAULT gen_random_uuid()::text,
+    title             VARCHAR(255),                   -- NULL = auto-generate from content
+    session_type      VARCHAR(20) NOT NULL DEFAULT 'regular',
+    parent_session_id UUID REFERENCES chat_sessions(id),
+    root_session_id   UUID REFERENCES chat_sessions(id),
+    depth_level       INTEGER NOT NULL DEFAULT 0,
+    topic             VARCHAR(500),
+    news_article_id   VARCHAR(20),
+    linked_attempt_id UUID,                          -- points to mcq_attempts row for quiz sessions
+    created_at        TIMESTAMPTZ DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ DEFAULT NOW(),
+    last_message_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_chat_sessions_user_id ON chat_sessions(user_id);
-CREATE INDEX idx_chat_sessions_last_message ON chat_sessions(user_id, last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_last ON chat_sessions(user_id, last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_parent    ON chat_sessions(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_root      ON chat_sessions(root_session_id);
 ```
+
+`linked_attempt_id` links a quiz-type session (created by "Check Knowledge") to its corresponding `mcq_attempts` row, enabling direct navigation from sidebar to a specific quiz attempt.
 
 ### 4.3 `mcq_attempts`
 ```sql
@@ -379,7 +401,21 @@ redis.set(day_key, day_articles, ex=ttl_until_midnight())
 db.upsert(day_key, day_articles)
 ```
 
-### 6.2 Article Data Shape
+### 6.2 Topic-Specific News Cache
+
+When a user asks about a specific topic in the news panel, the backend also maintains a short-lived topic cache:
+
+```
+Redis keys:
+  news:topic:{sha256(topic)[:12]}:30    TTL: 30 min  — exact topic match
+  news:topic:{sha256(topic)[:12]}:10    TTL: 10 min  — fallback / partial match
+```
+
+Served via `GET /news/topic-partial?topic=<text>`. Falls back to the category cache if no topic-specific articles are available.
+
+**`_age_hours` handling:** articles computed during RSS fetch include a transient `_age_hours` field used for in-flight filtering. This field is **stripped before any Redis `setex` call** (both in `cache.py`'s `set_cache()` and in `service.py`'s `get_topic_news()`) so stale age values are never stored in the cache.
+
+### 6.3 Article Data Shape
 
 ```json
 {
@@ -450,27 +486,35 @@ The `user_id` is extracted from the JWT, not from the request body.
 
 ### 8.1 Flow
 
+The quiz loads **inline** into the centre chat pane (`#chat-messages`) — no new tab is opened.
+
 ```
-Chat Page                   New Tab (Quiz Page)
-    │                              │
-    │  Click [Check Knowledge]     │
-    ├──────────────────────────────►
-    │  POST /quiz/generate         │
-    │  {session_id}                │
-    │                              │ Spinner while generating
-    │                              │ Receive questions JSON
-    │                              │ Render MCQ cards
-    │                              │ User answers
-    │                              │
-    │                              │ Auto-save on each answer
-    │                              │ PUT /quiz/attempt/{id}
-    │                              │
-    │                              │ Submit → score displayed
-    │                              │ PUT /quiz/attempt/{id} (completed_at set)
-    │                              │
-    │                              │ [Retry] → reset selections,
-    │                              │  same questions, new attempt row
+Chat Pane (#chat-messages)
+    │
+    │  Click [🧠 Check Knowledge]  — button disabled while any content is loading
+    │  POST /quiz/generate {session_id}
+    │  ← {attempt_id, questions, quiz_session_id}
+    │
+    │  HTMX GET /quiz/{attempt_id}/partial → loads quiz_inline.html into #chat-messages
+    │
+    │  User answers MCQ cards
+    │  Auto-save: PUT /quiz/attempt/{id} {answers}  (debounced 500ms)
+    │
+    │  Submit → PUT /quiz/attempt/{id} {answers, completed: true}
+    │  ← {score, questions with correct fields}
+    │  Score banner displayed inline
+    │
+    │  [Retry] → POST /quiz/retry → HTMX reloads fresh quiz inline
+    │
+    │  [🧠 Follow-up Quiz]  (shown after a quiz is submitted)
+    │  POST /quiz/generate-followup {attempt_id}
+    │  ← new attempt focusing on wrong answers from previous attempt
+    │  HTMX GET /quiz/{new_attempt_id}/partial → loads new inline quiz
 ```
+
+**Button disable rules:**
+- `[🧠 Check Knowledge]` / `[🧠 Follow-up Quiz]` is disabled whenever `chatLoading`, `contentBusy`, or a quiz is currently loaded but not yet submitted (`quizViewState && !quizViewState.submitted`).
+- Tooltip shows "Submit the quiz first" when blocked by an unsubmitted quiz.
 
 ### 8.2 MCQ Generation — `POST /quiz/generate`
 
@@ -555,10 +599,25 @@ Conversation:
 
 ### 8.5 Retry
 
-- User clicks **[Retry]**: frontend calls `POST /quiz/retry` with `{ "session_id": "..." }`.
+- User clicks **[Retry]**: frontend calls `POST /quiz/retry` with `{ "attempt_id": "..." }`.
 - Backend creates a **new `mcq_attempts` row** with the same questions (no re-generation cost) and resets answers/score.
-- Returns the new `attempt_id`; frontend resets all selections.
+- Returns the new `attempt_id`; HTMX reloads the inline quiz partial.
 - Previous attempt is preserved — users can review old scores via `GET /quiz/attempts?session_id=...`.
+
+### 8.6 Follow-up Quiz
+
+After a quiz is submitted, the **[🧠 Follow-up Quiz]** button becomes available:
+
+- Frontend calls `POST /quiz/generate-followup` with `{ "attempt_id": "..." }`.
+- Backend builds an attempt summary listing each question, the user's answer, and the correct answer.
+- Calls the LLM with `MCQ_FOLLOWUP_PROMPT` which instructs it to:
+  - Prioritise concepts the user answered **wrong** — probe them at a deeper level.
+  - For correctly-answered concepts, test related or adjacent ideas.
+  - Generate exactly 8 new questions; no question text may be reused verbatim.
+- Creates a new sibling `chat_session` (under the same parent content session) with title `"Quiz: … (follow-up)"` and a new `mcq_attempts` row.
+- Returns `{attempt_id, quiz_session_id, questions, session_id}`; HTMX loads the new inline quiz.
+
+**`MCQ_FOLLOWUP_PROMPT`** lives in `backend/agent/prompts.py`. The follow-up generator (`generate_mcq_followup()`) lives in `backend/api/quiz/generator.py` and uses the same retry-twice validation pattern as `generate_mcq()`.
 
 ---
 
@@ -580,35 +639,46 @@ GET /quiz/<id>          → render quiz/attempt.html  [require_auth]
 
 ### 9.2 Three-Pane Layout
 
+The left and right panes are **user-resizable** via drag handles. Alpine.js tracks `sidebarWidth` and `rightPanelWidth` with pixel values; CSS transitions animate open/close.
+
 ```
-┌──────────────┬────────────────────────────┬──────────────┐
-│  LEFT PANE   │       CENTRE PANE          │  RIGHT PANE  │
-│  240px fixed │  flex-1, min-w-0           │  320px fixed │
-│              │                            │              │
-│ ● New Chat   │  Message thread            │  AI News     │
-│              │  (HTMX beforeend swap      │  (HTMX load  │
-│ Session list │   on chat submit)          │   on mount)  │
-│ (HTMX load)  │                            │              │
-│              │  Chat input bar            │  Tab group:  │
-│              │  (hx-post=/chat)           │  AI / Prog / │
-│              │                            │  Political   │
-│              │  [Check Knowledge ▶]       │  (Alpine.js) │
-└──────────────┴────────────────────────────┴──────────────┘
+┌──────────────┬──┬───────────────────────────┬──┬──────────────┐
+│  LEFT PANE   │▌ │       CENTRE PANE         │▌ │  RIGHT PANE  │
+│  resizable   │  │  flex-1, min-w-0          │  │  resizable   │
+│              │  │                           │  │              │
+│ ● New Chat   │  │  Message thread           │  │  AI News     │
+│              │  │  (HTMX beforeend swap     │  │  (HTMX load  │
+│ Session list │  │   on chat submit)         │  │   on mount)  │
+│ (HTMX load)  │  │                           │  │              │
+│              │  │  Inline quiz in           │  │  Tab group:  │
+│ Green dot on │  │  #chat-messages when      │  │  AI / Dev /  │
+│ active thread│  │  "Check Knowledge"        │  │  World       │
+│ (bubbles to  │  │  is clicked               │  │  (Alpine.js) │
+│  parent when │  │                           │  │              │
+│  collapsed)  │  │  [🧠 Check Knowledge]     │  │  Loading     │
+│              │  │  (disabled during loads)  │  │  overlay     │
+└──────────────┴──┴───────────────────────────┴──┴──────────────┘
+           resize handles
 ```
 
 **Left pane** — `partials/session_list.html` (HTMX-loaded):
 - Groups sessions by: Today / Yesterday / This Week / Older.
 - Session item: title (auto or user-set) + relative timestamp.
-- Rename / delete via inline HTMX forms.
+- Hierarchical: `news_discussion` roots are collapsible; `learn_more` children indented.
+- **Green dot active indicator**: a `.knr-dot` `<span>` inside each session row `<a data-session-id="...">`. `window._reapplyActiveDot()` highlights the active row. When a parent is collapsed and the active session is a hidden descendant, the dot appears on the nearest visible ancestor row (softer shade). Triggered by `setActiveSession()`, HTMX `afterSettle` on `#session-list`, and collapse-toggle clicks.
 - Skeleton placeholder rendered server-side while loading.
 
-**Centre pane** — `partials/message.html` (HTMX appended):
-- "Check Knowledge" button rendered when session has ≥ 3 AI messages.
-- Button opens `/quiz/<attempt_id>` in a new tab (`target="_blank"`).
+**Centre pane** — messages + input bar:
+- `[🧠 Check Knowledge]` strip shown only when a session is active (`x-show="activeSessionId"`).
+- Quiz loads **inline** into `#chat-messages` (no new tab).
+- Button label toggles: "🧠 Check Knowledge" → "🧠 Follow-up Quiz" after a quiz is submitted.
+- Button disabled via `:disabled="quizLoading || chatLoading || contentBusy || (quizViewState && !quizViewState.submitted)"`.
+- **`contentBusy`** — single Alpine boolean set `true` during all content-loading operations (chat send, quiz generation, Explore, section quiz, Discuss, sidebar session switch, learn-more creation). Both Send and Check Knowledge buttons bind to it.
 
 **Right pane** — `partials/news_panel.html` (HTMX-loaded):
 - News tab group controlled by Alpine.js `x-data`.
 - Each tab triggers `hx-get=/news/partial?category=<tab>` on activate.
+- **Loading overlay**: absolutely-positioned spinner (`z-20`, `x-show="newsPanelLoading"`) covers the right pane while news is fetching, leaving existing content visible underneath.
 
 ### 9.3 HTMX Interaction Patterns
 
@@ -664,38 +734,89 @@ Failure: server returns HTML error fragment → HTMX swaps into `#form-error`.
 
 ### 9.5 State Management
 
-| Concern              | Solution                                                    |
-|----------------------|-------------------------------------------------------------|
-| Auth / current user  | Flask session (server-side, Redis-backed cookie)            |
-| Session list         | HTMX loads `/sessions/partial` on mount + on session create |
-| Active chat messages | HTMX loads `/sessions/<id>/messages/partial` on select      |
-| News content         | HTMX loads `/news/partial?category=<tab>` on tab activate   |
-| Active news tab      | Alpine.js `x-data` local state                              |
-| Quiz answers         | HTMX POST on each selection; server stores in DB            |
-| UI state             | Alpine.js `x-data` per component (toggles, dropdowns)       |
+| Concern                  | Solution                                                              |
+|--------------------------|-----------------------------------------------------------------------|
+| Auth / current user      | Flask session (server-side, Redis-backed cookie)                      |
+| Session list             | HTMX loads `/sessions/partial` on mount + `sessionListRefresh` event  |
+| Active chat messages     | HTMX loads `/sessions/<id>/messages/partial` on select                |
+| News content             | HTMX loads `/news/partial?category=<tab>` on tab activate             |
+| Active news tab          | Alpine.js `x-data` local state                                        |
+| Active session highlight | `window._activeSessionId` + `window._reapplyActiveDot()` DOM function |
+| Content loading lock     | Alpine `contentBusy` boolean — set by HTMX body listeners + JS calls  |
+| News panel loading       | Alpine `newsPanelLoading` boolean — overlay spinner in right pane      |
+| Quiz inline state        | `window.dispatchEvent(CustomEvent('quiz-view-changed'))` from `quiz.js` → `appState.quizViewState` |
+| Quiz answers             | Alpine state in `quizState()` component; auto-saved to DB via `PUT /quiz/attempt/{id}` |
+| Pane widths              | Alpine `sidebarWidth` / `rightPanelWidth` — mousedown drag handlers    |
+| UI state                 | Alpine.js `x-data` per component (toggles, dropdowns)                 |
+
+**`quizViewState` event flow:** `quiz.js`'s `quizState()` component dispatches `quiz-view-changed` on `init()` and after `submitQuiz()`. `appState().init()` listens for this event and stores `{isQuiz, attemptId, quizSessionId, parentSessionId, submitted, score}` in `quizViewState`. The `htmx:afterSettle` handler clears `quizViewState` when `#chat-messages` no longer contains a `.knr-quiz-root` element.
 
 ---
 
 ## 10. API Surface
 
-| Method | Path                           | Auth | Description                              |
-|--------|--------------------------------|------|------------------------------------------|
-| POST   | `/auth/register`               | —    | Register new user                        |
-| POST   | `/auth/login`                  | —       | Login, set session cookie, redirect to /app |
-| POST   | `/auth/logout`                 | Session | Clear session, redirect to /login           |
-| GET    | `/auth/me`                     | Session | Current user profile (JSON)                 |
-| GET    | `/sessions`                    | Session | List user's chat sessions                |
-| POST   | `/sessions`                    | Session | Create session                           |
-| PATCH  | `/sessions/{id}`               | Session | Rename session                           |
-| DELETE | `/sessions/{id}`               | Session | Delete session                           |
-| POST   | `/chat`                        | Session | Send message in session                  |
-| GET    | `/sessions/{id}/messages`      | Session | Full message history                     |
-| GET    | `/news`                        | Session | Cached + fresh news feed                 |
-| POST   | `/quiz/generate`               | Session | Generate MCQs for a session              |
-| GET    | `/quiz/attempt/{id}`           | Session | Load saved quiz state                    |
-| PUT    | `/quiz/attempt/{id}`           | Session | Auto-save answers                        |
-| POST   | `/quiz/retry`                  | Session | Create new attempt (same questions)      |
-| GET    | `/quiz/attempts`               | Session | List past attempts for a session         |
+### Page Routes
+
+| Method | Path               | Auth    | Description                        |
+|--------|--------------------|---------|------------------------------------|
+| GET    | `/`                | —       | Redirect to `/app` or `/login`     |
+| GET    | `/login`           | —       | Login page                         |
+| GET    | `/register`        | —       | Register page                      |
+| GET    | `/app`             | Session | Main 3-pane dashboard              |
+| GET    | `/learn/<id>`      | Session | Learning sub-thread page           |
+| GET    | `/quiz/<id>`       | Session | Full-page quiz (standalone)        |
+
+### Auth
+
+| Method | Path             | Auth    | Description                                         |
+|--------|------------------|---------|-----------------------------------------------------|
+| POST   | `/auth/register` | —       | Register new user, set session cookie               |
+| POST   | `/auth/login`    | —       | Authenticate, set session cookie, redirect to /app  |
+| POST   | `/auth/logout`   | Session | Clear session, redirect to /login                   |
+| GET    | `/auth/me`       | Session | Current user profile (JSON)                         |
+
+### Sessions
+
+| Method | Path                                    | Auth    | Description                            |
+|--------|-----------------------------------------|---------|----------------------------------------|
+| GET    | `/sessions`                             | Session | List user's sessions (with hierarchy)  |
+| POST   | `/sessions`                             | Session | Create session                         |
+| PATCH  | `/sessions/<id>`                        | Session | Rename session                         |
+| DELETE | `/sessions/<id>`                        | Session | Delete session                         |
+| GET    | `/sessions/partial`                     | Session | HTMX partial — sidebar session list    |
+| GET    | `/sessions/<id>/messages`               | Session | Full message history (JSON)            |
+| GET    | `/sessions/<id>/messages/partial`       | Session | HTMX partial — message list HTML       |
+| GET    | `/sessions/<id>/tree`                   | Session | Full ancestry chain (root → current)   |
+| POST   | `/sessions/<id>/learn-more`             | Session | Create learn_more sub-session          |
+
+### Chat
+
+| Method | Path    | Auth    | Description                                        |
+|--------|---------|---------|----------------------------------------------------|
+| POST   | `/chat` | Session | Send message; returns rendered message partial     |
+
+### News
+
+| Method | Path                             | Auth    | Description                                           |
+|--------|----------------------------------|---------|-------------------------------------------------------|
+| GET    | `/news`                          | Session | Cached + fresh news feed (JSON)                       |
+| GET    | `/news/partial`                  | Session | HTMX partial — news panel HTML (`?category=ai`)       |
+| GET    | `/news/topic-partial`            | Session | HTMX partial — topic-filtered articles (`?topic=...`) |
+| POST   | `/news/discuss`                  | Session | Create news_discussion session from article           |
+| POST   | `/news/fact-check`               | Session | ADK fact-check pipeline — returns verdict card HTML   |
+
+### Quiz
+
+| Method | Path                                       | Auth    | Description                                           |
+|--------|--------------------------------------------|---------|-------------------------------------------------------|
+| POST   | `/quiz/generate`                           | Session | Generate MCQs for a session                           |
+| POST   | `/quiz/generate-followup`                  | Session | Generate follow-up quiz targeting previous weak areas |
+| GET    | `/quiz/<attempt_id>/partial`               | Session | HTMX partial — inline quiz loaded into #chat-messages |
+| GET    | `/quiz/attempt/<id>`                       | Session | Load saved quiz state (JSON)                          |
+| PUT    | `/quiz/attempt/<id>`                       | Session | Auto-save answers; `completed: true` submits quiz     |
+| POST   | `/quiz/retry`                              | Session | Create new attempt (same questions)                   |
+| GET    | `/quiz/attempts`                           | Session | List past attempts for a session                      |
+| GET    | `/quiz/attempt/<id>/relearn/<question_id>` | Session | AI relearn explanation for a wrong answer             |
 
 ---
 
@@ -1557,45 +1678,51 @@ backend/agent/
 │                       NEWS_CURATION_PROMPT (Layer 2)
 │                       DISCUSSION_PROMPT (Layer 4 — Explore)
 │                       LEARN_MORE_PROMPT (Layer 4 — Learn More)
-│                       MCQ_GENERATION_PROMPT, RELEARN_PROMPT
+│                       MCQ_GENERATION_PROMPT
+│                       MCQ_FOLLOWUP_PROMPT  ← follow-up quiz targeting weak areas
+│                       RELEARN_PROMPT
 │                       FACT_CHECK_SEARCH_PROMPT (Layer 5)
 │                       FACT_CHECK_VERDICT_PROMPT (Layer 5)
 └── tools.py         ← LangChain @tool: get_latest_ai_news
 ```
 
+**`MCQ_FOLLOWUP_PROMPT`** wraps the previous attempt summary (per-question correct/wrong breakdown) and instructs the LLM to generate 8 new questions that probe wrong answers at a deeper level and test adjacent ideas for correct answers. No question text from the previous attempt may be reused verbatim.
+
 ### 25.7 Three-Pane Layout
 
-The app uses a full-screen three-pane layout. The left sidebar is collapsible:
+The app uses a full-screen three-pane layout. The left sidebar is collapsible and all three panes are **user-resizable** via drag handles:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │  [☰]  Knowledge Root                                    Sign Out     │  ← nav
-├────────────────┬─────────────────────────────┬──────────────────────┤
-│  LEFT SIDEBAR  │      CHAT (centre)           │  NEWS PANEL (right)  │
-│  w-64 fixed    │      flex-1                  │  w-80 fixed          │
-│  (toggleable)  │                              │                      │
-│                │  Message thread              │  [AI][Dev][World]    │
-│  [+ New Chat]  │  (HTMX append)               │  ─────────────────   │
-│  ──────────    │                              │  Article cards:      │
-│  Today         │  ┌──────────────────────┐    │  source · date       │
-│  ├─ Chat A     │  │ Sectioned AI response│    │  title               │
-│  │  ├─ Sub 1   │  │ ⚡ Concept 1         │    │  description         │
-│  │  └─ Sub 2   │  │   [Explore]          │    │  [Read article]      │
-│  └─ 📰 News X  │  │ ⚡ Concept 2         │    │  [Explore]           │
-│     ├─ Sub 1   │  │   [Explore]          │    │  [Fact Check]        │
-│  Yesterday     │  └──────────────────────┘    │                      │
-│  └─ Chat B     │                              │                      │
-│                │  [Type a message...]  [Send] │                      │
-└────────────────┴─────────────────────────────┴──────────────────────┘
+├──────────────────┬──┬──────────────────────────────┬──┬─────────────┤
+│  LEFT SIDEBAR    │▌ │      CHAT (centre)            │▌ │  NEWS PANE  │
+│  resizable       │  │      flex-1                   │  │  resizable  │
+│  (toggleable)    │  │                               │  │             │
+│                  │  │  Message thread               │  │ [AI][Dev]   │
+│  [+ New Chat]    │  │  (HTMX append)                │  │ [World]     │
+│  ──────────      │  │                               │  │ ──────────  │
+│  Today           │  │  Inline quiz inside           │  │ Article     │
+│  ├─ Chat A ●     │  │  #chat-messages               │  │ cards       │
+│  │  ├─ Sub 1     │  │  (.knr-quiz-root)             │  │             │
+│  │  └─ Sub 2     │  │                               │  │ [Read]      │
+│  └─ 📰 News X    │  │  [🧠 Check Knowledge]         │  │ [Explore]   │
+│     ├─ ⚡ Sub 1  │  │  (disabled during loads or    │  │ [Fact ✓]    │
+│  Yesterday       │  │   unsubmitted quiz)            │  │             │
+│  └─ Chat B       │  │                               │  │ Loading     │
+│                  │  │  [Type a message...]   [Send] │  │ overlay     │
+└──────────────────┴──┴──────────────────────────────┴──┴─────────────┘
 ```
 
-Sidebar toggle (Alpine.js + CSS transition):
-- Desktop: open by default; `[☰]` button collapses it with a smooth transition
-- Mobile: always starts collapsed; hamburger shows it as an overlay drawer
-- State persisted in `localStorage`
-- Hierarchical session tree: `news_discussion` roots have an expand/collapse arrow that hides their `learn_more` children
+**Sidebar toggle** (Alpine.js + CSS transition):
+- `[☰]` button dispatches `toggle-sidebar` event; sidebar width transitions to 0.
+- Collapsible: each `news_discussion` root has an expand/collapse arrow hiding its `learn_more` children. Collapsing triggers `_reapplyActiveDot()` to bubble the green dot to the nearest visible ancestor.
 
-The chat input bar in the centre pane is **always visible** even when no session is active — sending a message auto-creates a `regular` session before delivering the first turn.
+**Green dot active indicator** (`session_list.html`):
+- Each `<a data-session-id="...">` has an absolutely-positioned `.knr-dot hidden` span.
+- `window._reapplyActiveDot()` shows the dot on the active row. If the active session is hidden (collapsed subtree), walks up `[x-data]` ancestors to find the nearest visible parent row and shows a softer dot there.
+
+**Centre pane input bar** is **always visible** — sending a message with no active session auto-creates a `regular` session before the first turn.
 
 ---
 

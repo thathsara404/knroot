@@ -36,6 +36,7 @@ def news_discuss(user_id: str, article_id: str, article_title: str,
         session_type='news_discussion',
         news_article_id=article_id,
         title=article_title[:80],
+        topic=article_link,
     )
 
     prompt = (

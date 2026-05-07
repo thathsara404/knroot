@@ -1,17 +1,100 @@
-// quiz.js — Alpine component for the full quiz page (/quiz/<attempt_id>)
+// quiz.js — Alpine components for quiz (full page + inline in chat pane)
 
-function quizState(questions, attemptId, savedAnswers, alreadyCompleted, savedScore) {
+function quizStateInline(scriptId) {
+  const raw = JSON.parse(document.getElementById(scriptId).textContent);
+  const state = quizState(
+    raw.questions, raw.attempt_id,
+    raw.answers || {}, raw.completed || false, raw.score || 0,
+    raw.quiz_session_id || '', raw.session_id || '',
+  );
+  state.inline = true;
+  return state;
+}
+
+function quizStateFullPage(scriptId) {
+  const raw = JSON.parse(document.getElementById(scriptId).textContent);
+  // inline stays false — retryQuiz() navigates via window.location.href
+  return quizState(
+    raw.questions, raw.attempt_id,
+    raw.answers || {}, raw.completed || false, raw.score || 0,
+    raw.quiz_session_id || '', raw.session_id || '',
+  );
+}
+
+function quizState(questions, attemptId, savedAnswers, alreadyCompleted, savedScore, quizSessionId, parentSessionId) {
   return {
     questions: questions,
     attemptId: attemptId,
+    quizSessionId: quizSessionId || '',
+    parentSessionId: parentSessionId || '',
     answers: savedAnswers || {},
     submitted: alreadyCompleted || false,
     score: savedScore || 0,
     loading: false,
+    inline: false,
     saveTimeout: null,
+    relearn: {},  // { questionId: { open, loading, explanation, exploreLoading, exploreOpened } }
+
+    _dispatchViewState() {
+      window.dispatchEvent(new CustomEvent('quiz-view-changed', {
+        detail: {
+          isQuiz: true,
+          attemptId: this.attemptId,
+          quizSessionId: this.quizSessionId,
+          parentSessionId: this.parentSessionId,
+          submitted: this.submitted,
+          score: this.score,
+        },
+      }));
+    },
 
     init() {
-      // Completed attempts already have 'correct' field from server — nothing to fetch.
+      this._dispatchViewState();
+    },
+
+    _panel(questionId) {
+      if (!this.relearn[questionId]) {
+        this.relearn[questionId] = {
+          open: false, loading: false, explanation: '',
+          exploreLoading: false, exploreOpened: false,
+        };
+      }
+      return this.relearn[questionId];
+    },
+
+    openRelearn(questionId) {
+      const panel = this._panel(questionId);
+      if (panel.open) return;
+      panel.open = true;
+      panel.loading = true;
+      fetch('/quiz/attempt/' + this.attemptId + '/relearn/' + questionId)
+        .then((r) => r.json())
+        .then((d) => {
+          panel.explanation = d.explanation || 'No explanation available.';
+          panel.loading = false;
+        })
+        .catch(() => {
+          panel.explanation = 'Could not load explanation.';
+          panel.loading = false;
+        });
+    },
+
+    exploreRelearn(questionId, questionTopic) {
+      if (!this.quizSessionId) {
+        window.Toast && Toast.error('Cannot explore: quiz session not found');
+        return;
+      }
+      const panel = this._panel(questionId);
+      panel.exploreLoading = true;
+      window.exploreSection(
+        this.quizSessionId,
+        questionTopic || 'quiz question topic',
+        null,
+        (ok) => {
+          panel.exploreLoading = false;
+          if (ok) panel.exploreOpened = true;
+        },
+      );
     },
 
     selectAnswer(questionId, optionIndex) {
@@ -47,6 +130,7 @@ function quizState(questions, attemptId, savedAnswers, alreadyCompleted, savedSc
           if (data.questions) this.questions = data.questions;
           this.submitted = true;
           this.loading = false;
+          this._dispatchViewState();
           window.scrollTo({ top: 0, behavior: 'smooth' });
         })
         .catch(() => {
@@ -63,23 +147,16 @@ function quizState(questions, attemptId, savedAnswers, alreadyCompleted, savedSc
       })
         .then((r) => r.json())
         .then((data) => {
-          window.location.href = '/quiz/' + data.attempt_id;
+          if (this.inline) {
+            htmx.ajax('GET', '/quiz/' + data.attempt_id + '/partial', {
+              target: '#chat-messages',
+              swap: 'innerHTML',
+            });
+          } else {
+            window.location.href = '/quiz/' + data.attempt_id;
+          }
         })
         .catch(() => alert('Could not create retry. Please try again.'));
-    },
-
-    loadRelearn(questionId, panelData) {
-      panelData.loading = true;
-      fetch('/quiz/attempt/' + this.attemptId + '/relearn/' + questionId)
-        .then((r) => r.json())
-        .then((data) => {
-          panelData.explanation = data.explanation || 'No explanation available.';
-          panelData.loading = false;
-        })
-        .catch(() => {
-          panelData.explanation = 'Could not load explanation.';
-          panelData.loading = false;
-        });
     },
 
     optionClass(questionId, optionIndex, correctIndex) {

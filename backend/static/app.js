@@ -25,6 +25,36 @@ document.body.addEventListener('htmx:responseError', function (evt) {
   Toast.error(msg);
 });
 
+// Post-settle hooks — runs after Alpine has initialised new DOM nodes.
+document.body.addEventListener('htmx:afterSettle', function (evt) {
+  const targetId = evt.detail.target && evt.detail.target.id;
+  if (targetId === 'session-list') {
+    setTimeout(function () { window._reapplyActiveDot && window._reapplyActiveDot(); }, 0);
+  }
+  if (targetId === 'chat-messages') {
+    // Clear quiz view state when non-quiz content is loaded into the chat pane.
+    // (If a quiz loaded, its init() will have already dispatched quiz-view-changed.)
+    setTimeout(function () {
+      if (!evt.detail.target.querySelector('.knr-quiz-root')) {
+        const appData = _getAppData();
+        if (appData) appData.quizViewState = null;
+      }
+    }, 0);
+  }
+});
+
+// Disable Send + Check Knowledge while any HTMX request is loading into #chat-messages.
+document.body.addEventListener('htmx:beforeRequest', function (evt) {
+  const targetId = evt.detail.target && evt.detail.target.id;
+  if (targetId === 'chat-messages') _setContentBusy(true);
+  if (targetId === 'right-panel') _setNewsPanelLoading(true);
+});
+document.body.addEventListener('htmx:afterRequest', function (evt) {
+  const targetId = evt.detail.target && evt.detail.target.id;
+  if (targetId === 'chat-messages') _setContentBusy(false);
+  if (targetId === 'right-panel') _setNewsPanelLoading(false);
+});
+
 // Render server-side flash messages as toasts on page load.
 document.addEventListener('DOMContentLoaded', function () {
   const flashEl = document.getElementById('flash-data');
@@ -57,6 +87,79 @@ function _getAppData() {
   return null;
 }
 
+function _setContentBusy(val) {
+  const data = _getAppData();
+  if (data) data.contentBusy = !!val;
+}
+
+function _setNewsPanelLoading(val) {
+  const data = _getAppData();
+  if (data) data.newsPanelLoading = !!val;
+}
+
+// Returns true if el has no display:none ancestor up to (not including) container.
+function _isSessionLinkVisible(el, container) {
+  let node = el.parentElement;
+  while (node && node !== container) {
+    if (node.style.display === 'none') return false;
+    node = node.parentElement;
+  }
+  return true;
+}
+
+// Place the green dot on the active session row, or bubble it to the nearest
+// visible ancestor when the active row is inside a collapsed subtree.
+window._reapplyActiveDot = function () {
+  const list = document.getElementById('session-list');
+  if (!list) return;
+
+  // Reset all dots and active row highlights
+  list.querySelectorAll('.knr-dot').forEach((dot) => {
+    dot.classList.add('hidden');
+    dot.classList.remove('bg-green-400', 'bg-green-300');
+  });
+  list.querySelectorAll('a[data-session-id]').forEach((a) => {
+    a.classList.remove('bg-gray-800', 'text-white');
+  });
+
+  const id = window._activeSessionId;
+  if (!id) return;
+
+  const activeLink = list.querySelector('a[data-session-id="' + id + '"]');
+  if (!activeLink) return;
+
+  // Always highlight the exact active row so it lights up when its parent expands
+  activeLink.classList.add('bg-gray-800', 'text-white');
+
+  // Decide where to show the dot: exact row (if visible) or nearest visible ancestor
+  let targetLink = null;
+  if (_isSessionLinkVisible(activeLink, list)) {
+    targetLink = activeLink;
+  } else {
+    // Walk up the DOM through [x-data] session wrappers until we find a visible row
+    let node = activeLink.parentElement;
+    while (node && node !== list) {
+      if (node.hasAttribute && node.hasAttribute('x-data')) {
+        const rowLink = node.querySelector(':scope > div > a[data-session-id]');
+        if (rowLink && _isSessionLinkVisible(rowLink, list)) {
+          targetLink = rowLink;
+          break;
+        }
+      }
+      node = node.parentElement;
+    }
+  }
+
+  if (targetLink) {
+    const dot = targetLink.querySelector('.knr-dot');
+    if (dot) {
+      dot.classList.remove('hidden');
+      // Bright green on the exact row, softer green when bubbled to an ancestor
+      dot.classList.add(targetLink === activeLink ? 'bg-green-400' : 'bg-green-300');
+    }
+  }
+};
+
 // =============================================================================
 // Alpine component: appState() — main dashboard
 // =============================================================================
@@ -67,6 +170,9 @@ function appState() {
     activeSessionId: null,
     chatLoading: false,
     quizLoading: false,
+    contentBusy: false,
+    newsPanelLoading: false,
+    quizViewState: null,  // { isQuiz, attemptId, quizSessionId, parentSessionId, submitted, score }
     sidebarWidth: parseInt(localStorage.getItem('knroot_sidebar_w') || '256'),
     rightPanelWidth: parseInt(localStorage.getItem('knroot_right_w') || '320'),
     isPanelDragging: false,
@@ -82,6 +188,9 @@ function appState() {
         this.isPanelDragging = false;
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
+      });
+      window.addEventListener('quiz-view-changed', (e) => {
+        this.quizViewState = e.detail.isQuiz ? e.detail : null;
       });
       window.addEventListener('mousemove', (e) => {
         if (!this.isPanelDragging) return;
@@ -114,6 +223,20 @@ function appState() {
       const sessionId = this.activeSessionId;
       if (!sessionId) {
         Toast.error('No active session. Start a conversation first.');
+        return;
+      }
+      if (this.quizViewState && this.quizViewState.submitted) {
+        // Active view is a completed quiz — generate a targeted follow-up
+        const parentId = this.quizViewState.parentSessionId;
+        generateFollowupQuiz(
+          this.quizViewState.attemptId,
+          parentId,
+          (v) => { this.quizLoading = v; },
+          () => {
+            const sl = document.getElementById('session-list');
+            if (sl) htmx.ajax('GET', `/sessions/partial?expand=${parentId || sessionId}`, { target: sl, swap: 'innerHTML' });
+          },
+        );
         return;
       }
       generateQuizForSession(
@@ -193,13 +316,11 @@ window.setActiveSession = function (sessionId) {
   // event is the correct way to update Alpine state from outside Alpine.
   window.dispatchEvent(new CustomEvent('session-activated', { detail: { sessionId } }));
 
-  // Highlight the clicked session row in the sidebar.
-  document.querySelectorAll('#session-list a').forEach((a) => {
-    a.classList.remove('bg-gray-800', 'text-white');
-  });
+  // Update sidebar dot and active-row highlight
+  window._reapplyActiveDot && window._reapplyActiveDot();
 
-  // Switch right panel to knowledge tree for the active session.
-  htmx.ajax('GET', `/sessions/${sessionId}/knowledge-tree/partial`, {
+  // Switch right panel to topic-relevant news for the active session.
+  htmx.ajax('GET', `/news/topic-partial?session_id=${sessionId}`, {
     target: '#right-panel',
     swap: 'innerHTML',
   });
@@ -246,6 +367,7 @@ window.onChatResponse = function (event) {
 
 // Load a "Learn More" sub-session inline in the chat pane (no new tab).
 window.exploreSection = function (sessionId, topic, btn, callback) {
+  _setContentBusy(true);
   // Show a loading state immediately so the user sees something while the LLM runs
   const messages = document.getElementById('chat-messages');
   if (messages) {
@@ -286,6 +408,7 @@ window.exploreSection = function (sessionId, topic, btn, callback) {
       if (callback) callback(true);
     })
     .catch(() => {
+      _setContentBusy(false);
       if (messages) {
         messages.innerHTML =
           '<div class="text-center py-10 text-gray-400 text-sm">' +
@@ -296,34 +419,43 @@ window.exploreSection = function (sessionId, topic, btn, callback) {
     });
 };
 
-// Generate a quiz scoped to a specific section and open it in a new tab.
+// Generate a quiz scoped to a specific section and load it inline in the chat pane.
 window.generateSectionQuiz = function (sessionId, sectionTitle, sectionContent, btn, callback) {
+  _setContentBusy(true);
   if (btn) btn.disabled = true;
-  // Open blank tab synchronously — browsers block window.open() inside async .then()
-  const newTab = window.open('about:blank', '_blank', 'noopener,noreferrer');
+  const messages = document.getElementById('chat-messages');
+  if (messages) {
+    messages.innerHTML =
+      '<div class="flex items-center justify-center h-full">' +
+        '<div class="text-center space-y-3 text-gray-400">' +
+          '<svg class="animate-spin w-8 h-8 mx-auto text-purple-500" fill="none" viewBox="0 0 24 24">' +
+            '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>' +
+            '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>' +
+          '</svg>' +
+          '<p class="text-sm">Generating quiz…</p>' +
+        '</div>' +
+      '</div>';
+  }
 
   fetch('/quiz/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      session_id: sessionId,
-      section_title: sectionTitle,
-      section_content: sectionContent,
-    }),
+    body: JSON.stringify({ session_id: sessionId, section_title: sectionTitle, section_content: sectionContent }),
   })
     .then((r) => {
       if (!r.ok) return r.json().then((d) => Promise.reject(d.error || 'Quiz generation failed'));
       return r.json();
     })
     .then((data) => {
-      if (newTab) newTab.location.href = '/quiz/' + data.attempt_id;
-      // Refresh sidebar with parent expanded so new quiz sub-thread is visible immediately
+      htmx.ajax('GET', '/quiz/' + data.attempt_id + '/partial', { target: '#chat-messages', swap: 'innerHTML' });
+      if (data.quiz_session_id) window.setActiveSession(data.quiz_session_id);
       const sl = document.getElementById('session-list');
       if (sl) htmx.ajax('GET', `/sessions/partial?expand=${sessionId}`, { target: sl, swap: 'innerHTML' });
       if (callback) callback(true);
     })
     .catch((err) => {
-      if (newTab) newTab.close();
+      _setContentBusy(false);
+      if (messages) messages.innerHTML = '<div class="text-center py-10 text-gray-400 text-sm">Could not generate quiz. Please try again.</div>';
       Toast.error(typeof err === 'string' ? err : 'Could not generate quiz');
       if (btn) btn.disabled = false;
       if (callback) callback(false);
@@ -397,9 +529,22 @@ window.deleteSession = function (sessionId, childCount) {
     .catch(() => Toast.error('Could not delete session'));
 };
 
-// Generate a full-session quiz and open in new tab (used on learn pages without appState).
+// Generate a full-session quiz and load it inline in the chat pane.
 window.generateQuizForSession = function (sessionId, onLoading, onDone) {
-  const newTab = window.open('about:blank', '_blank', 'noopener,noreferrer');
+  _setContentBusy(true);
+  const messages = document.getElementById('chat-messages');
+  if (messages) {
+    messages.innerHTML =
+      '<div class="flex items-center justify-center h-full">' +
+        '<div class="text-center space-y-3 text-gray-400">' +
+          '<svg class="animate-spin w-8 h-8 mx-auto text-purple-500" fill="none" viewBox="0 0 24 24">' +
+            '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>' +
+            '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>' +
+          '</svg>' +
+          '<p class="text-sm">Generating quiz…</p>' +
+        '</div>' +
+      '</div>';
+  }
   if (onLoading) onLoading(true);
   fetch('/quiz/generate', {
     method: 'POST',
@@ -411,13 +556,60 @@ window.generateQuizForSession = function (sessionId, onLoading, onDone) {
       return r.json();
     })
     .then((data) => {
-      if (newTab) newTab.location.href = '/quiz/' + data.attempt_id;
+      htmx.ajax('GET', '/quiz/' + data.attempt_id + '/partial', { target: '#chat-messages', swap: 'innerHTML' });
+      if (data.quiz_session_id) window.setActiveSession(data.quiz_session_id);
+      const sl = document.getElementById('session-list');
+      if (sl) htmx.ajax('GET', `/sessions/partial?expand=${sessionId}`, { target: sl, swap: 'innerHTML' });
       if (onLoading) onLoading(false);
       if (onDone) onDone();
     })
     .catch((err) => {
-      if (newTab) newTab.close();
+      _setContentBusy(false);
+      if (messages) messages.innerHTML = '<div class="text-center py-10 text-gray-400 text-sm">Could not generate quiz. Please try again.</div>';
       Toast.error(typeof err === 'string' ? err : 'Could not generate quiz');
+      if (onLoading) onLoading(false);
+    });
+};
+
+// Generate a follow-up quiz targeting weak areas from a completed attempt.
+window.generateFollowupQuiz = function (attemptId, parentSessionId, onLoading, onDone) {
+  _setContentBusy(true);
+  const messages = document.getElementById('chat-messages');
+  if (messages) {
+    messages.innerHTML =
+      '<div class="flex items-center justify-center h-full">' +
+        '<div class="text-center space-y-3 text-gray-400">' +
+          '<svg class="animate-spin w-8 h-8 mx-auto text-purple-500" fill="none" viewBox="0 0 24 24">' +
+            '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>' +
+            '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>' +
+          '</svg>' +
+          '<p class="text-sm">Generating follow-up quiz…</p>' +
+        '</div>' +
+      '</div>';
+  }
+  if (onLoading) onLoading(true);
+  fetch('/quiz/generate-followup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ attempt_id: attemptId }),
+  })
+    .then((r) => {
+      if (!r.ok) return r.json().then((d) => Promise.reject(d.error || 'Follow-up quiz generation failed'));
+      return r.json();
+    })
+    .then((data) => {
+      htmx.ajax('GET', '/quiz/' + data.attempt_id + '/partial', { target: '#chat-messages', swap: 'innerHTML' });
+      if (data.quiz_session_id) window.setActiveSession(data.quiz_session_id);
+      const sl = document.getElementById('session-list');
+      const expandId = parentSessionId || data.session_id;
+      if (sl && expandId) htmx.ajax('GET', `/sessions/partial?expand=${expandId}`, { target: sl, swap: 'innerHTML' });
+      if (onLoading) onLoading(false);
+      if (onDone) onDone();
+    })
+    .catch((err) => {
+      _setContentBusy(false);
+      if (messages) messages.innerHTML = '<div class="text-center py-10 text-gray-400 text-sm">Could not generate follow-up quiz. Please try again.</div>';
+      Toast.error(typeof err === 'string' ? err : 'Could not generate follow-up quiz');
       if (onLoading) onLoading(false);
     });
 };

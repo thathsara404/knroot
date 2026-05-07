@@ -32,6 +32,32 @@ def generate_mcq(conversation_text: str, n_questions: int = 8) -> list[dict]:
     raise ValueError(f"MCQ generation failed after 2 attempts: {last_exc}") from last_exc
 
 
+def generate_mcq_followup(attempt_summary: str, n_questions: int = 8) -> list[dict]:
+    """Generate a follow-up MCQ quiz targeted at weak areas from a previous attempt."""
+    from backend.agent.prompts import MCQ_FOLLOWUP_PROMPT
+    from backend.core.llm import build_llm_client
+
+    llm = build_llm_client(temperature=0.5)
+    prompt = MCQ_FOLLOWUP_PROMPT.replace("{attempt_summary}", attempt_summary)
+
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            resp = llm.invoke(prompt)
+            text = str(resp.content).strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            parsed = json.loads(text)
+            questions = parsed.get("questions", [])
+            _validate(questions, n_questions)
+            return questions[:n_questions]
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("MCQ followup attempt %d failed: %s", attempt + 1, exc)
+
+    raise ValueError(f"MCQ followup generation failed: {last_exc}") from last_exc
+
+
 def _validate(questions: list, n_required: int) -> None:
     if len(questions) < n_required:
         raise ValueError(f"Got {len(questions)} questions, need {n_required}")

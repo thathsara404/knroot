@@ -92,6 +92,73 @@ def generate_quiz(
     }
 
 
+def generate_quiz_followup(user_id: str, from_attempt_id: str) -> dict:
+    """Generate a follow-up quiz targeting weak areas from a completed attempt."""
+    from backend.core.errors import ForbiddenError
+    from backend.core.db import execute, query_one
+    from backend.api.sessions.service import create_session
+    from backend.api.quiz.generator import generate_mcq_followup
+
+    row = query_one(
+        "SELECT id, session_id, questions, answers FROM mcq_attempts "
+        "WHERE id = %s AND user_id = %s AND completed_at IS NOT NULL",
+        (from_attempt_id, user_id),
+    )
+    if not row:
+        raise ForbiddenError("Completed attempt not found or access denied")
+
+    questions = (
+        row["questions"] if isinstance(row["questions"], list)
+        else json.loads(row["questions"] or "[]")
+    )
+    answers = row["answers"] or {}
+
+    lines = []
+    for q in questions:
+        user_idx = answers.get(q["id"])
+        correct_idx = q.get("correct")
+        status = "CORRECT" if user_idx == correct_idx else "WRONG"
+        user_text = q["options"][user_idx] if user_idx is not None and 0 <= user_idx < len(q["options"]) else "(no answer)"
+        correct_text = q["options"][correct_idx] if correct_idx is not None and 0 <= correct_idx < len(q["options"]) else "?"
+        lines.append(
+            f"Q: {q['text']}\n"
+            f"  Answered: {user_text} → {status}"
+            + (f"  (correct: {correct_text})" if status == "WRONG" else "")
+        )
+    attempt_summary = "\n".join(lines)
+
+    new_questions = generate_mcq_followup(attempt_summary)
+
+    session_id = str(row["session_id"])
+    new_attempt_id = str(uuid.uuid4())
+    execute(
+        "INSERT INTO mcq_attempts (id, user_id, session_id, questions) VALUES (%s, %s, %s, %s)",
+        (new_attempt_id, user_id, session_id, json.dumps(new_questions)),
+    )
+
+    session_row = query_one("SELECT title FROM chat_sessions WHERE id = %s", (session_id,))
+    quiz_title = f"Quiz: {session_row['title'] if session_row else 'Knowledge Check'} (follow-up)"[:80]
+    quiz_session = create_session(
+        user_id=user_id,
+        session_type="quiz",
+        parent_session_id=session_id,
+        title=quiz_title,
+        topic="quiz",
+    )
+    execute(
+        "UPDATE chat_sessions SET linked_attempt_id = %s WHERE id = %s",
+        (new_attempt_id, quiz_session["id"]),
+    )
+
+    safe_qs = [{k: v for k, v in q.items() if k != "correct"} for q in new_questions]
+    return {
+        "attempt_id": new_attempt_id,
+        "quiz_session_id": quiz_session["id"],
+        "questions": safe_qs,
+        "session_id": session_id,
+    }
+
+
 def get_attempt(user_id: str, attempt_id: str) -> dict:
     from backend.core.errors import ForbiddenError
     from backend.core.db import query_one
@@ -182,6 +249,11 @@ def retry_quiz(user_id: str, attempt_id: str) -> dict:
         """INSERT INTO mcq_attempts (id, user_id, session_id, questions)
            VALUES (%s, %s, %s, %s)""",
         (new_id, user_id, str(row["session_id"]), json.dumps(questions)),
+    )
+    # Keep the quiz session pointing to the latest attempt
+    execute(
+        "UPDATE chat_sessions SET linked_attempt_id = %s WHERE linked_attempt_id = %s AND user_id = %s",
+        (new_id, attempt_id, user_id),
     )
     return {"attempt_id": new_id}
 

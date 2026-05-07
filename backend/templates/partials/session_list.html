@@ -34,7 +34,7 @@
     {% if has_kids %}
     <button
       type="button"
-      @click.stop="open = !open"
+      @click.stop="open = !open; $nextTick(() => window._reapplyActiveDot && window._reapplyActiveDot())"
       class="flex-shrink-0 w-4 h-4 flex items-center justify-center rounded
              text-gray-500 hover:text-gray-300 hover:bg-gray-700"
       :aria-label="open ? 'Collapse' : 'Expand'"
@@ -48,39 +48,29 @@
     <span class="flex-shrink-0 w-4"></span>
     {% endif %}
 
-    {# Quiz sessions link directly to the quiz page; all others load messages via HTMX #}
-    {% if s.session_type == 'quiz' and s.linked_attempt_id %}
-    <a
-      href="/quiz/{{ s.linked_attempt_id }}"
-      target="_blank"
-      rel="noopener noreferrer"
-      class="flex items-center gap-1.5 flex-1 py-1.5 pr-2 text-xs rounded-lg
-             text-gray-300 hover:bg-gray-800 hover:text-white transition-colors truncate"
-    >
-      <span class="flex-shrink-0 leading-none">🧪</span>
-      <span class="truncate">{{ s.title or 'Quiz' }}</span>
-    </a>
-    {% else %}
     <a
       href="#"
+      data-session-id="{{ s.id }}"
       hx-get="/sessions/{{ s.id }}/messages/partial"
       hx-target="#chat-messages"
       hx-swap="innerHTML"
       hx-on::after-request="setActiveSession('{{ s.id }}')"
-      class="flex items-center gap-1.5 flex-1 py-1.5 pr-2 text-xs rounded-lg
-             text-gray-300 hover:bg-gray-800 hover:text-white transition-colors truncate"
+      class="relative flex items-center gap-1.5 flex-1 py-1.5 pr-5 text-xs rounded-lg
+             text-gray-300 hover:bg-gray-800 hover:text-white transition-colors min-w-0"
     >
       <span class="flex-shrink-0 leading-none">
-        {%- if s.session_type == 'news_discussion' -%}📰
+        {%- if s.session_type == 'quiz' -%}🧪
+        {%- elif s.session_type == 'news_discussion' -%}📰
         {%- elif s.session_type == 'learn_more' -%}⚡
         {%- else -%}💬{%- endif -%}
       </span>
       <span class="truncate">{{ s.title or s.topic or 'New Chat' }}</span>
       {% if has_kids %}
-      <span class="flex-shrink-0 ml-auto text-xs text-gray-600 pr-1">{{ total_desc }}</span>
+      <span class="flex-shrink-0 ml-auto text-xs text-gray-600 pr-2">{{ total_desc }}</span>
       {% endif %}
+      {# Active indicator dot — toggled by _reapplyActiveDot() in app.js #}
+      <span class="knr-dot hidden absolute right-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none"></span>
     </a>
-    {% endif %}
 
     {# Action buttons — visible on row hover #}
     <div class="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 flex-shrink-0">

@@ -4,15 +4,22 @@
 
 {% block content %}
 <div class="min-h-screen bg-gray-50 py-8 px-4">
+
+  {# Safe data embedding — avoids double-quote injection inside x-data attributes #}
+  <script type="application/json" id="qdata-{{ attempt.attempt_id }}">
+  {{ {
+    "questions": attempt.questions,
+    "attempt_id": attempt.attempt_id,
+    "answers": attempt.answers or {},
+    "completed": attempt.completed_at is not none,
+    "score": attempt.score or 0,
+    "quiz_session_id": quiz_session_id if quiz_session_id is defined else ""
+  } | tojson }}
+  </script>
+
   <div
     class="max-w-3xl mx-auto"
-    x-data="quizState(
-      {{ attempt.questions | tojson }},
-      '{{ attempt.attempt_id }}',
-      {{ (attempt.answers or {}) | tojson }},
-      {{ 'true' if attempt.completed_at else 'false' }},
-      {{ attempt.score | tojson }}
-    )"
+    x-data="quizStateFullPage('qdata-{{ attempt.attempt_id }}')"
     x-init="init()"
   >
 
@@ -69,7 +76,6 @@
       <template x-for="(q, qi) in questions" :key="q.id">
         <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
 
-          {# Question header #}
           <div class="px-5 pt-5 pb-3">
             <div class="flex items-start gap-2 mb-4">
               <span class="flex-shrink-0 w-6 h-6 rounded-full bg-gray-100 text-gray-500 text-xs flex items-center justify-center font-semibold mt-0.5"
@@ -77,7 +83,6 @@
               <p class="text-sm font-medium text-gray-800 leading-relaxed" x-text="q.text"></p>
             </div>
 
-            {# Result badge #}
             <div x-show="submitted" class="mb-3">
               <span
                 x-show="answers[q.id] === q.correct"
@@ -89,7 +94,6 @@
               >✗ Incorrect</span>
             </div>
 
-            {# Options #}
             <div class="space-y-2">
               <template x-for="(opt, oi) in q.options" :key="oi">
                 <button
@@ -103,14 +107,13 @@
             </div>
           </div>
 
-          {# Relearn panel for wrong answers #}
+          {# Relearn panel — uses outer quiz component state (no nested x-data) #}
           <div
             x-show="submitted && answers[q.id] !== q.correct"
             class="border-t border-gray-100 px-5 py-3 bg-gray-50"
-            x-data="{ open: false, loading: false, explanation: '' }"
           >
             <button
-              @click="if(!open){ open=true; $root.loadRelearn(q.id, $data) }"
+              @click="openRelearn(q.id)"
               class="text-xs text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
             >
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -119,9 +122,36 @@
               </svg>
               📖 Why was I wrong?
             </button>
-            <div x-show="open" class="mt-2 bg-amber-50 border border-amber-100 rounded-lg p-3">
-              <div x-show="loading" class="text-xs text-amber-600 italic">Loading explanation...</div>
-              <p x-show="!loading && explanation" x-text="explanation" class="text-xs text-amber-800 leading-relaxed"></p>
+            <div x-show="relearn[q.id] && relearn[q.id].open"
+                 class="mt-2 bg-amber-50 border border-amber-100 rounded-lg p-3">
+              <div x-show="relearn[q.id] && relearn[q.id].loading"
+                   class="text-xs text-amber-600 italic">Loading explanation...</div>
+              <p x-show="relearn[q.id] && !relearn[q.id].loading"
+                 x-text="relearn[q.id] ? relearn[q.id].explanation : ''"
+                 class="text-sm text-amber-800 leading-relaxed whitespace-pre-wrap"></p>
+              <div x-show="relearn[q.id] && !relearn[q.id].loading && relearn[q.id].explanation"
+                   class="mt-2.5 pt-2.5 border-t border-amber-200 flex items-center justify-end">
+                <button
+                  x-show="!relearn[q.id].exploreOpened"
+                  :disabled="relearn[q.id] && relearn[q.id].exploreLoading"
+                  @click="exploreRelearn(q.id, q.topic)"
+                  class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg
+                         bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                >
+                  <span x-show="!relearn[q.id].exploreLoading">Explore this topic</span>
+                  <span x-show="relearn[q.id].exploreLoading" class="flex items-center gap-1">
+                    <svg class="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24">
+                      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Loading...
+                  </span>
+                </button>
+                <span
+                  x-show="relearn[q.id] && relearn[q.id].exploreOpened"
+                  class="flex items-center gap-1 text-xs font-medium text-green-700"
+                >✓ Loaded</span>
+              </div>
             </div>
           </div>
 
@@ -137,23 +167,17 @@
         :disabled="Object.keys(answers).length === 0"
         class="px-6 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-medium
                hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-      >
-        Submit Quiz
-      </button>
+      >Submit Quiz</button>
       <button
         x-show="submitted"
         @click="retryQuiz()"
         class="px-6 py-2.5 bg-gray-100 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-200 transition-colors"
-      >
-        Retry
-      </button>
+      >Retry</button>
       <a
         x-show="submitted"
         href="/app"
         class="px-6 py-2.5 text-indigo-600 rounded-xl text-sm font-medium hover:bg-indigo-50 transition-colors"
-      >
-        Back to Chat
-      </a>
+      >Back to Chat</a>
     </div>
 
   </div>

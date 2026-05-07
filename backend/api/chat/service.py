@@ -129,10 +129,21 @@ def auto_title_session(session_id: str, first_user_msg: str, first_ai_reply: str
         first_ai_reply_excerpt=first_ai_reply[:300],
     )
     try:
-        title = str(llm.invoke(prompt).content).strip()[:80]
+        raw = str(llm.invoke(prompt).content).strip()
+        # Strip markdown fences if model wraps in ```json
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        try:
+            data = json.loads(raw)
+            title = str(data.get("title") or raw).strip()[:80]
+            topic = str(data.get("topic") or title).strip()[:120]
+        except (ValueError, TypeError):
+            # Model didn't return JSON — treat the whole response as the title
+            title = raw[:80]
+            topic = title
         execute(
-            "UPDATE chat_sessions SET title = %s WHERE id = %s",
-            (title, session_id),
+            "UPDATE chat_sessions SET title = %s, topic = COALESCE(topic, %s) WHERE id = %s",
+            (title, topic, session_id),
         )
     except Exception as exc:
         logger.warning("Auto-title failed for session %s: %s", session_id, exc)

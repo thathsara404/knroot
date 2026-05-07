@@ -46,9 +46,15 @@ Rules:
 - Be precise and technical; cite specific papers, models, or benchmarks when relevant."""
 
 AUTO_TITLE_PROMPT = """\
-Generate a 4–6 word technical chat title. No punctuation or filler words.
-Examples: "LoRA fine-tuning on LLaMA 3", "Docker networking bridge mode".
-Reply with ONLY the title — no explanation.
+Given a chat exchange, produce a short title AND a topic phrase for news search.
+
+Return ONLY valid JSON — no prose:
+{{"title": "<4-6 word technical title, no punctuation>", "topic": "<2-4 keywords best for finding related news>"}}
+
+Examples:
+{{"title": "LoRA fine-tuning on LLaMA 3", "topic": "LoRA fine-tuning large language models"}}
+{{"title": "Docker networking bridge mode", "topic": "Docker container networking"}}
+{{"title": "Transformer attention mechanisms", "topic": "transformer attention neural networks"}}
 
 User said: {first_user_message}
 AI replied: {first_ai_reply_excerpt}"""
@@ -180,6 +186,34 @@ Return ONLY valid JSON — no prose outside the JSON:
 
 Articles (index: title — source):
 {article_list}"""
+
+MCQ_FOLLOWUP_PROMPT = """\
+You are a technical quiz generator creating a follow-up quiz based on a student's previous attempt.
+
+Previous quiz performance:
+<attempt_summary>
+{attempt_summary}
+</attempt_summary>
+
+RULES:
+- Generate exactly 8 new multiple-choice questions
+- Prioritise concepts the student answered WRONG — test those at a deeper level
+- For correctly-answered concepts, probe related or adjacent ideas rather than repeating
+- Do NOT reuse the exact same question text as the previous quiz
+- Only test technical concepts: no names, dates, locations, or trivia
+
+Return ONLY valid JSON, no prose:
+{{
+  "questions": [
+    {{
+      "id": "q_01",
+      "text": "<question>",
+      "options": ["<A>", "<B>", "<C>", "<D>"],
+      "correct": <0|1|2|3>,
+      "topic": "<specific concept this question tests>"
+    }}
+  ]
+}}"""
 
 RELEARN_PROMPT = """\
 In 3–4 concise sentences, explain why the correct answer to this question is correct, \

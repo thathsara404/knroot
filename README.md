@@ -29,8 +29,12 @@ Built with **Flask 3 + Jinja2**, **HTMX**, **Alpine.js**, **LangGraph** (chat), 
 - **Fact-Check Button** — click `[Fact Check]` on any news article to trigger a Google Search-powered ADK pipeline (Search Agent + Verdict Agent) that verifies key claims and rates them verified / disputed / unverifiable with source links.
 - **Explore Button** — click `[Explore]` on an article to open a chat where the AI extracts the underlying theories, laws, and technical concepts as a sectioned response.
 - **Learn More Deep Dives** — each concept section has a Learn More button that opens a dedicated learning tab with a visual knowledge tree.
-- **Hierarchical Knowledge Check** — generates MCQs spanning your full learning path. Wrong answers show an AI explanation. Correct answers unlock deeper exploration.
+- **Inline Knowledge Check** — click "🧠 Check Knowledge" to generate MCQs that load directly in the chat pane (no new tab). Auto-saves answers; submitting shows a score banner. Retry resets selections; "🧠 Follow-up Quiz" generates 8 new questions targeting weak areas from the previous attempt.
+- **Hierarchical MCQs** — MCQs for learn_more sessions span your full learning path from root to current topic. Wrong answers show an AI relearn explanation with an "Explore this topic" button.
+- **Smart Button Disable** — Send and Check Knowledge are automatically disabled during any content-loading operation (chat, quiz generation, Explore, sidebar session switches). A loading overlay covers the news panel while articles fetch.
+- **Active Session Dot** — green dot marks the current thread in the sidebar. When sub-threads are collapsed the dot bubbles up to the nearest visible parent row.
 - **Tool-Enabled Chat Agent** — a LangGraph ReAct agent can re-fetch live news mid-conversation on demand.
+- **Resizable Panes** — drag handles between the three panes let users adjust sidebar and news panel widths.
 - **Production-Ready** — Gunicorn, connection pooling, structured logging, Docker health checks, GitHub Actions CI/CD.
 
 ---
@@ -70,11 +74,30 @@ ai-agent/
 │   │   ├── auth/
 │   │   │   ├── login.html
 │   │   │   └── register.html
-│   │   └── app/
-│   │       └── index.html         # Dashboard (authenticated)
+│   │   ├── app/
+│   │   │   └── index.html         # 3-pane dashboard (sidebar + chat + news)
+│   │   ├── learn/
+│   │   │   └── session.html       # /learn/<id> — knowledge tree right pane
+│   │   ├── quiz/
+│   │   │   └── attempt.html       # Full-page standalone quiz
+│   │   └── partials/              # HTMX partial responses
+│   │       ├── session_list.html  # Sidebar tree + green-dot indicator
+│   │       ├── message.html       # Single message bubble
+│   │       ├── messages.html      # Full message history list
+│   │       ├── sectioned_message.html
+│   │       ├── news_panel.html    # 3-tab news panel
+│   │       ├── topic_news_panel.html
+│   │       ├── knowledge_tree.html
+│   │       ├── knowledge_tree_panel.html
+│   │       ├── quiz_inline.html   # Inline quiz in #chat-messages
+│   │       ├── quiz_section.html
+│   │       └── fact_check_report.html
 │   │
 │   ├── static/
-│   │   └── app.js                 # HTMX global config + HX-Redirect handler
+│   │   ├── app.js                 # Alpine appState() + all HTMX event wiring
+│   │   ├── quiz.js                # quizState() / quizStateInline() components
+│   │   ├── auth.js                # Login/register page helpers
+│   │   └── toast.js               # Toast notification helper
 │   │
 │   ├── agent/
 │   │   ├── graph.py               # LangGraph StateGraph
@@ -351,10 +374,25 @@ Full API surface is documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/` | Dashboard |
+| GET | `/` | Dashboard (3-pane layout) |
+| GET | `/learn/<id>` | Learning sub-thread with knowledge tree |
 | POST | `/chat` | Send message to AI |
-| GET | `/news` | Cached news feed |
-| POST | `/quiz/generate` | Generate MCQs |
+| GET | `/news` | Cached news feed (JSON) |
+| GET | `/news/partial` | HTMX news panel partial (`?category=ai\|programming\|political`) |
+| GET | `/news/topic-partial` | HTMX topic-filtered articles |
+| POST | `/news/discuss` | Create news_discussion session from article |
+| POST | `/news/fact-check` | ADK fact-check pipeline |
+| GET | `/sessions` | List sessions with full hierarchy |
+| GET | `/sessions/partial` | HTMX sidebar session list |
+| GET | `/sessions/<id>/messages/partial` | HTMX message history |
+| POST | `/sessions/<id>/learn-more` | Create learn_more sub-session |
+| GET | `/sessions/<id>/tree` | Session ancestry chain |
+| POST | `/quiz/generate` | Generate MCQs (flat) |
+| POST | `/quiz/generate-followup` | Adaptive follow-up quiz from previous attempt |
+| GET | `/quiz/<id>/partial` | HTMX inline quiz partial |
+| PUT | `/quiz/attempt/<id>` | Auto-save / submit answers |
+| POST | `/quiz/retry` | New attempt (same questions) |
+| GET | `/quiz/attempt/<id>/relearn/<q_id>` | AI relearn explanation for wrong answer |
 
 ---
 

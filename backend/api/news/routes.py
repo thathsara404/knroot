@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, render_template, request
+import logging
+
+from flask import Blueprint, g, jsonify, render_template, request
+
+logger = logging.getLogger(__name__)
 
 from backend.api.news.feeds import NEWS_FEEDS
-from backend.api.news.service import get_news
+from backend.api.news.service import get_news, get_topic_news
 from backend.core.auth import require_api_auth, require_auth
 from backend.core.errors import UnprocessableError
 
@@ -31,6 +35,44 @@ def news_partial():
         "partials/news_panel.html",
         articles=articles,
         category=category,
+    )
+
+
+@bp.get("/news/topic-partial")
+@require_auth
+def topic_news_partial():
+    topic = request.args.get("topic", "").strip()
+    session_id = request.args.get("session_id", "").strip()
+    hours = min(int(request.args.get("hours", 168)), 720)
+    force = request.args.get("force", "false").lower() == "true"
+
+    # Resolve topic from session if not supplied directly
+    if session_id and not topic:
+        from backend.api.sessions.service import get_session
+        session = get_session(g.user_id, session_id)
+        if session:
+            stype = session.get("session_type", "")
+            if stype == "news_discussion":
+                # topic stores the article URL — use the article title instead
+                topic = session.get("title") or ""
+            elif stype == "quiz":
+                raw = session.get("topic") or session.get("title") or ""
+                topic = raw if raw.lower() not in ("quiz", "") else ""
+            else:
+                topic = session.get("topic") or session.get("title") or ""
+
+    try:
+        articles = get_topic_news(topic, hours, force=force) if topic else get_news("ai", force=force)
+    except Exception:
+        logger.exception("topic-partial failed, falling back to general news")
+        articles = get_news("ai")
+        topic = ""
+    return render_template(
+        "partials/topic_news_panel.html",
+        articles=articles,
+        topic=topic,
+        hours=hours,
+        session_id=session_id,
     )
 
 

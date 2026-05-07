@@ -1533,6 +1533,103 @@ Each article card (redesigned layout):
 - [x] `[Fact Check]` triggers the ADK `SequentialAgent` (Search + Verdict) and renders a verdict card in-place
 - [x] `[Fact Check]` returns a graceful error card when `GOOGLE_API_KEY` is unset
 
+---
+
+## Phase 8 — UX Polish, Inline Quiz & Adaptive Follow-up (`feature/auth`)
+
+> **Status:** ✅ shipped on the `feature/auth` branch.
+
+### Goal
+Improve loading feedback, prevent double-submission, move the quiz inline, add an adaptive follow-up quiz, and add a visual active-session indicator in the sidebar.
+
+### Features Shipped
+
+#### 8.1 Button Disable During Content Loads
+
+A single Alpine boolean `contentBusy` in `appState()` gates both the **Send** and **🧠 Check Knowledge** buttons. It is set `true`/`false` by:
+- HTMX `htmx:beforeRequest` / `htmx:afterRequest` listeners on `document.body` when the target is `#chat-messages` (declarative chat send).
+- Manual calls to `window._setContentBusy(true/false)` inside `exploreSection()`, `generateSectionQuiz()`, `generateQuizForSession()`, and sidebar session-switch handlers.
+
+`chatLoading` tracks the chat form spinner separately. Both are OR'd in the `:disabled` binding.
+
+#### 8.2 News Panel Loading Overlay
+
+Alpine `newsPanelLoading` boolean; HTMX body listeners detect requests targeting `#right-panel`. An absolutely-positioned overlay (`z-20`, `backdrop-blur`) covers the right pane with a spinner while news is fetching — existing content remains visible.
+
+**Templates changed:** `backend/templates/app/index.html` — added `relative` class on right `<aside>` + loading overlay `<div>`.
+
+#### 8.3 Cache `_age_hours` Fix
+
+`_age_hours` is computed at fetch time and must not be persisted in Redis (the frozen value becomes stale). Fixed in:
+- `backend/api/news/cache.py` — `set_cache()` strips the field before `r.setex`.
+- `backend/api/news/service.py` — `get_topic_news()` strips the field before both `r.setex` calls (hit and fallback paths).
+
+#### 8.4 Inline Quiz in `#chat-messages`
+
+The quiz no longer opens in a new tab. Clicking **🧠 Check Knowledge**:
+1. `POST /quiz/generate {session_id}` → `{attempt_id, quiz_session_id}`
+2. `htmx.ajax('GET', '/quiz/{attempt_id}/partial', { target: '#chat-messages', swap: 'innerHTML' })`
+3. `partials/quiz_inline.html` is rendered with `x-data="quizStateInline('qdata-{attempt_id}')"`.
+4. The outer quiz div gets class `knr-quiz-root` — used by `htmx:afterSettle` to detect whether a quiz is active.
+
+`quiz.js` changes:
+- `quizStateInline()` / `quizStateFullPage()` pass `raw.session_id` as new `parentSessionId` param.
+- `quizState()` gains `parentSessionId` field.
+- `_dispatchViewState()` method dispatches `quiz-view-changed` CustomEvent on init and after submit.
+- `retryQuiz()` uses `htmx.ajax(..., { target: '#chat-messages', swap: 'innerHTML' })` for inline retry.
+
+#### 8.5 Quiz View State in `appState()`
+
+`appState().init()` listens for `quiz-view-changed`:
+```js
+window.addEventListener('quiz-view-changed', (e) => {
+  this.quizViewState = e.detail;  // {isQuiz, attemptId, quizSessionId, parentSessionId, submitted, score}
+});
+```
+
+`htmx:afterSettle` on `#chat-messages` clears `quizViewState` if no `.knr-quiz-root` is present (uses `setTimeout(..., 0)` to let Alpine initialise first).
+
+Check Knowledge button disable rule: `quizViewState && !quizViewState.submitted` — tooltip: "Submit the quiz first".
+
+Button label: "🧠 Check Knowledge" when no quiz or quiz submitted; "🧠 Follow-up Quiz" when `quizViewState?.submitted`.
+
+#### 8.6 Adaptive Follow-up Quiz
+
+**`POST /quiz/generate-followup`** — body: `{attempt_id}`
+
+Service (`backend/api/quiz/service.py` — `generate_quiz_followup()`):
+1. Loads completed attempt (`completed_at IS NOT NULL`).
+2. Builds attempt summary: `"Q: {text}\n  User: {selected_option} → CORRECT/WRONG (correct: {correct_option})"` per question.
+3. Calls `generate_mcq_followup(attempt_summary)` in `generator.py`.
+4. Creates new `mcq_attempts` row.
+5. Creates sibling `chat_session` (same `parent_session_id` as the source session) with title `"Quiz: {source_title} (follow-up)"`.
+6. Returns `{attempt_id, quiz_session_id, questions, session_id}`.
+
+`MCQ_FOLLOWUP_PROMPT` in `backend/agent/prompts.py`:
+- 8 new questions; prioritise wrong-answered concepts at deeper level.
+- For correct answers: probe related/adjacent ideas.
+- No verbatim question reuse. Technical concepts only.
+
+Frontend: `window.generateFollowupQuiz(attemptId, parentSessionId, onLoading, onDone)` in `app.js` — called from `generateQuiz()` when `quizViewState.submitted` is true.
+
+#### 8.7 Sidebar Green Dot Active Indicator
+
+**`partials/session_list.html`** changes:
+- Each `<a>` gets `data-session-id="..."`, `class="relative ... pr-5 min-w-0"`.
+- A `.knr-dot hidden absolute right-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none` `<span>` is inserted inside each `<a>`.
+- Collapse toggle: `@click.stop="open = !open; $nextTick(() => window._reapplyActiveDot && window._reapplyActiveDot())"`.
+
+**`window._reapplyActiveDot()`** in `app.js`:
+1. Reset: hide all `.knr-dot` spans; remove `bg-gray-800 text-white` from all session links.
+2. Find active link by `data-session-id`.
+3. Mark active link with `bg-gray-800 text-white`.
+4. If active link is visible (checked via `_isSessionLinkVisible` — walks `node.style.display` up the DOM), place `bg-green-400` dot on it.
+5. Otherwise walk `[x-data]` ancestors to find nearest visible parent row; place `bg-green-300` (softer) dot on that.
+
+**`_isSessionLinkVisible(el, container)`** — walks ancestors checking `node.style.display === 'none'` (Alpine `x-show` sets inline style). More reliable than `offsetParent` for Alpine-managed visibility.
+
+Triggered from: `setActiveSession()`, `htmx:afterSettle` on `#session-list`, and collapse-toggle clicks.
+
 ### Items Deferred from the Original Phase 7 Plan
 The following were specified in the original plan but were **not shipped** — they were superseded by simpler designs or moved to a later phase:
 

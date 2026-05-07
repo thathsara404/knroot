@@ -53,12 +53,19 @@ def learn(session_id: str):
 @bp.get('/quiz/<attempt_id>')
 @require_auth
 def quiz(attempt_id: str):
+    from backend.core.db import query_one as _qone
     from backend.api.quiz.service import get_attempt
     from backend.api.sessions.service import get_session
     attempt = get_attempt(g.user_id, attempt_id)
     session_obj = get_session(g.user_id, attempt['session_id']) or {}
+    quiz_row = _qone(
+        "SELECT id FROM chat_sessions WHERE linked_attempt_id = %s AND user_id = %s",
+        (attempt_id, g.user_id),
+    )
+    quiz_session_id = str(quiz_row["id"]) if quiz_row else ""
     return render_template(
         'quiz/attempt.html',
         attempt=attempt,
         session_title=session_obj.get('title') or 'Knowledge Check',
+        quiz_session_id=quiz_session_id,
     )

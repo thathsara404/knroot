@@ -41,6 +41,8 @@ def news_discuss():
                 "partials/sectioned_message.html",
                 data=first,
                 session_id=result["session_id"],
+                article_link=data.get("article_link", ""),
+                article_title=data.get("article_title", ""),
             )
         else:
             text = first.get("text", str(first)) if isinstance(first, dict) else str(first)

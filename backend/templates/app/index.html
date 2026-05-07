@@ -109,12 +109,16 @@
       <button
         type="button"
         @click="generateQuiz()"
-        :disabled="quizLoading"
+        :disabled="quizLoading || chatLoading || contentBusy || (quizViewState && !quizViewState.submitted)"
+        :title="quizViewState && !quizViewState.submitted ? 'Submit the quiz first' : ''"
         class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg
                bg-purple-50 text-purple-700 border border-purple-200
                hover:bg-purple-100 disabled:opacity-50 transition-colors"
       >
-        <span x-show="!quizLoading">🧠 Check Knowledge</span>
+        <span x-show="!quizLoading">
+          <span x-show="!quizViewState || !quizViewState.submitted">🧠 Check Knowledge</span>
+          <span x-show="quizViewState && quizViewState.submitted">🧠 Follow-up Quiz</span>
+        </span>
         <span x-show="quizLoading" class="flex items-center gap-1">
           <svg class="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
@@ -148,7 +152,7 @@
         ></textarea>
         <button
           type="submit"
-          :disabled="chatLoading"
+          :disabled="chatLoading || contentBusy"
           class="px-4 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-medium
                  hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
@@ -175,9 +179,23 @@
 
   <!-- RIGHT PANE: News / Knowledge Tree -->
   <aside
-    class="flex-shrink-0 border-l border-gray-200 bg-gray-50 overflow-hidden flex flex-col"
+    class="flex-shrink-0 border-l border-gray-200 bg-gray-50 overflow-hidden flex flex-col relative"
     :style="`width:${rightPanelWidth}px;min-width:200px`"
   >
+    <!-- Loading overlay shown while news panel is fetching -->
+    <div
+      x-show="newsPanelLoading"
+      x-cloak
+      class="absolute inset-0 z-20 flex items-center justify-center bg-white/75 backdrop-blur-[1px]"
+    >
+      <div class="flex flex-col items-center gap-2 text-indigo-500">
+        <svg class="animate-spin w-6 h-6" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+        <span class="text-xs font-medium text-gray-500">Loading news…</span>
+      </div>
+    </div>
     <div
       id="right-panel"
       hx-get="/news/partial?category=ai"

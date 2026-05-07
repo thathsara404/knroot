@@ -72,9 +72,34 @@ def get_messages(session_id: str):
 @bp.get("/sessions/<session_id>/messages/partial")
 @require_auth
 def messages_partial(session_id: str):
-    messages = sessions_svc.get_messages(g.user_id, session_id)
     session = sessions_svc.get_session(g.user_id, session_id)
-    return render_template("partials/messages.html", messages=messages, session=session)
+
+    # Quiz sessions have no session_messages — render quiz inline directly
+    if session and session.get("session_type") == "quiz":
+        attempt_id = session.get("linked_attempt_id")
+        if attempt_id:
+            from backend.api.quiz.service import get_attempt
+            attempt = get_attempt(g.user_id, str(attempt_id))
+            return render_template(
+                "partials/quiz_inline.html",
+                attempt=attempt,
+                session_title=session.get("title") or "Knowledge Check",
+                quiz_session_id=session_id,  # quiz session IS the current session
+            )
+
+    messages = sessions_svc.get_messages(g.user_id, session_id)
+    article_link = ""
+    article_title = ""
+    if session and session.get("session_type") == "news_discussion":
+        article_link = session.get("topic") or ""
+        article_title = session.get("title") or ""
+    return render_template(
+        "partials/messages.html",
+        messages=messages,
+        session=session,
+        article_link=article_link,
+        article_title=article_title,
+    )
 
 
 @bp.get("/sessions/<session_id>/tree")
