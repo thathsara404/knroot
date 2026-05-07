@@ -1,0 +1,67 @@
+{# partials/quiz_section.html — HTMX fragment, NO extends #}
+{# Variables: questions (list of MCQ dicts {id,text,options,correct}), section_id (str), session_id (str) #}
+{% if not questions %}
+<div class="p-4 text-sm text-gray-400 text-center">Could not generate quiz. Try again.</div>
+{% else %}
+<div
+  class="p-4 space-y-4"
+  x-data='{
+    answers: {},
+    submitted: false,
+    score: 0,
+    questions: {{ questions | tojson }},
+    submit() {
+      this.submitted = true;
+      let correct = 0;
+      for (const q of this.questions) {
+        if (this.answers[q.id] === q.correct) correct++;
+      }
+      this.score = correct;
+    }
+  }'
+  id="quiz-container-{{ section_id }}"
+>
+  <div class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Quick Quiz</div>
+
+  {% for q in questions %}
+  <div class="space-y-2">
+    <p class="text-sm font-medium text-gray-800">{{ loop.index }}. {{ q.text }}</p>
+    <div class="space-y-1">
+      {% for opt in q.options %}
+      <button
+        type="button"
+        :disabled="submitted"
+        @click="if(!submitted) answers['{{ q.id }}'] = {{ loop.index0 }}"
+        :class="{
+          'bg-indigo-50 border-indigo-400 text-indigo-700': !submitted && answers['{{ q.id }}'] === {{ loop.index0 }},
+          'bg-green-50 border-green-400 text-green-700': submitted && {{ loop.index0 }} === {{ q.correct }},
+          'bg-red-50 border-red-300 text-red-600': submitted && answers['{{ q.id }}'] === {{ loop.index0 }} && {{ loop.index0 }} !== {{ q.correct }},
+          'border-gray-200 text-gray-600': !submitted && answers['{{ q.id }}'] !== {{ loop.index0 }}
+        }"
+        class="w-full text-left text-xs px-3 py-2 rounded-lg border transition-colors disabled:cursor-not-allowed"
+      >
+        {{ opt }}
+      </button>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+
+  <button
+    type="button"
+    x-show="!submitted"
+    @click="submit()"
+    class="w-full py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 transition-colors"
+  >
+    Submit
+  </button>
+
+  <div
+    x-show="submitted"
+    class="text-sm font-semibold text-center py-2 rounded-lg"
+    :class="score >= {{ (questions | length) // 2 }} ? 'bg-green-50 text-green-700' : 'bg-orange-50 text-orange-700'"
+  >
+    Score: <span x-text="score"></span> / {{ questions | length }}
+  </div>
+</div>
+{% endif %}

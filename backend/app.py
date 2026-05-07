@@ -53,12 +53,18 @@ def create_app(config_name: str | None = None) -> Flask:
     from backend.api.news.routes import bp as news_bp
     from backend.api.chat.routes import bp as chat_bp
     from backend.api.pages.routes import bp as pages_bp
+    from backend.api.sessions.routes import bp as sessions_bp
+    from backend.api.discuss.routes import bp as discuss_bp
+    from backend.api.quiz.routes import bp as quiz_bp
 
     app.register_blueprint(health_bp)
     app.register_blueprint(auth_bp)
     app.register_blueprint(news_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(pages_bp)
+    app.register_blueprint(sessions_bp)
+    app.register_blueprint(discuss_bp)
+    app.register_blueprint(quiz_bp)
 
     register_error_handlers(app)
 

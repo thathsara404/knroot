@@ -2,9 +2,9 @@
 
 > **knroot.com** — Build deep roots.
 
-An AI-powered tech learning companion. Chat with an expert AI tutor about AI/ML and software engineering, browse live news, and explore knowledge through branching "Learn More" sub-threads backed by a hierarchical knowledge tree and MCQ-based knowledge checks.
+An AI-powered tech learning companion. Chat with an expert AI tutor about AI/ML and software engineering, browse live news with AI-curated rankings, fact-check headlines against Google Search, and explore knowledge through branching "Learn More" sub-threads backed by a hierarchical knowledge tree and MCQ-based knowledge checks.
 
-Built with **Flask 3 + Jinja2**, **HTMX**, **Alpine.js**, **LangGraph**, **OpenRouter** (DeepSeek), **PostgreSQL**, and **Redis**.
+Built with **Flask 3 + Jinja2**, **HTMX**, **Alpine.js**, **LangGraph** (chat), **Google ADK** (fact-check), **OpenRouter** (DeepSeek), **Google AI** (Gemini 2.0 Flash), **PostgreSQL**, and **Redis**.
 
 ---
 
@@ -22,11 +22,15 @@ Built with **Flask 3 + Jinja2**, **HTMX**, **Alpine.js**, **LangGraph**, **OpenR
 
 - **Authentication** — register and log in with username, email, and password. Server-side sessions stored in Redis.
 - **Persistent Chat Sessions** — all conversations stored in PostgreSQL via LangGraph checkpointing. Sessions survive restarts and appear in the history panel, auto-titled from content.
-- **Live Multi-Category News Feed** — three categories: AI, Programming, and Political. Smart Redis cache splits stable older articles (day cache) from fresh current-hour articles (hour cache).
-- **Discuss Button** — click Discuss on any article to open a chat where the AI extracts the underlying theories, laws, and technical concepts.
+- **Always-Visible Chat Input** — the message bar is always available; sending the first message auto-creates a session, so there's no "New Chat" friction.
+- **Collapsible Session Tree** — left sidebar shows chat history as a hierarchical tree; news discussion sessions show their Learn More sub-threads with expand/collapse arrows.
+- **Live Multi-Category News Feed** — three tabs: AI, Dev, World. Each card shows source, date, title, and description with `[Read article]`, `[Explore]`, and `[Fact Check]` buttons. Smart Redis cache splits stable older articles (day cache) from fresh current-hour articles (hour cache).
+- **Hourly AI News Curation** — DeepSeek ranks freshly fetched RSS articles by importance every hour so the most impactful news always appears first; falls back to RSS order on LLM failure.
+- **Fact-Check Button** — click `[Fact Check]` on any news article to trigger a Google Search-powered ADK pipeline (Search Agent + Verdict Agent) that verifies key claims and rates them verified / disputed / unverifiable with source links.
+- **Explore Button** — click `[Explore]` on an article to open a chat where the AI extracts the underlying theories, laws, and technical concepts as a sectioned response.
 - **Learn More Deep Dives** — each concept section has a Learn More button that opens a dedicated learning tab with a visual knowledge tree.
 - **Hierarchical Knowledge Check** — generates MCQs spanning your full learning path. Wrong answers show an AI explanation. Correct answers unlock deeper exploration.
-- **Tool-Enabled Agent** — the AI can re-fetch live news mid-conversation on demand.
+- **Tool-Enabled Chat Agent** — a LangGraph ReAct agent can re-fetch live news mid-conversation on demand.
 - **Production-Ready** — Gunicorn, connection pooling, structured logging, Docker health checks, GitHub Actions CI/CD.
 
 ---
@@ -112,26 +116,32 @@ ai-agent/
 ## Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────┐
-│          Browser (HTMX + Alpine.js + Tailwind)        │
-└────────────────────────┬─────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│          Browser (HTMX + Alpine.js + Tailwind)                │
+└────────────────────────┬─────────────────────────────────────┘
                          │ HTML (full page + partials)
-┌────────────────────────▼─────────────────────────────┐
-│              Flask (Python) — Jinja2 SSR              │
-│   /  /login  /register  (page routes)                 │
-│   /auth/*  /chat  /news  /quiz/*  (API/HTMX routes)  │
-└──────┬──────────────┬────────────────┬───────────────┘
-       │              │                │
-  Session Auth    LangGraph        Redis
-  (Flask-Session  + OpenRouter     (Cache + Sessions)
-   + bcrypt)           │
-       │               │
-  ┌────▼───────────────▼────────────────────────┐
-  │              PostgreSQL 16                   │
-  │  users · chat_sessions · mcq_attempts ·     │
-  │  news_cache · session_hierarchy              │
-  └─────────────────────────────────────────────┘
+┌────────────────────────▼─────────────────────────────────────┐
+│              Flask (Python) — Jinja2 SSR                      │
+│   /  /login  /register  (page routes)                         │
+│   /auth/*  /chat  /news  /news/discuss  /news/fact-check      │
+│   /sessions/*  /quiz/*           (API + HTMX routes)          │
+└────┬──────────┬──────────────┬────────────────┬──────────────┘
+     │          │              │                │
+ Session     LangGraph     Direct DeepSeek    Google ADK
+ Auth        ReAct Agent   (Explore /         SequentialAgent
+ (bcrypt +   (chat —       Learn More +       (fact-check —
+  Redis-     OpenRouter    hourly news        Gemini 2.0
+  backed)    DeepSeek)     curation)          Flash + Search)
+     │          │              │                │
+  ┌──▼──────────▼──────────────▼────────────────▼───┐
+  │       PostgreSQL 16            +    Redis 7     │
+  │   users · chat_sessions ·         news cache    │
+  │   mcq_attempts · news_cache ·     (day + hour   │
+  │   LangGraph checkpoints           per category) │
+  └─────────────────────────────────────────────────┘
 ```
+
+See [docs/ARCHITECTURE.md §25](docs/ARCHITECTURE.md) for the full five-layer AI architecture (RSS cache → AI curation → LangGraph chat → direct discuss pipeline → ADK fact-check).
 
 ---
 
@@ -145,6 +155,7 @@ ai-agent/
 | make | any | `sudo apt install make` |
 | Docker + Docker Compose | 24+ / v2 | For running the full stack |
 | OpenRouter API Key | — | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| Google AI API Key | optional | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — only required for the `[Fact Check]` button |
 
 ### 1. Clone and configure
 
@@ -155,12 +166,15 @@ cd ai-agent
 cp .env-example .env
 ```
 
-Edit `.env` and fill in the required values:
+Edit `.env` and fill in the values:
 
 ```env
 SESSION_SECRET_KEY=your-long-random-secret-here   # required
-OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxx  # required
+OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxx  # required (chat, Explore, news curation)
+GOOGLE_API_KEY=AIzaSy-xxxxxxxxxxxxxxxxxxxxxxxx    # optional — required for [Fact Check] button
 ```
+
+`GOOGLE_API_KEY` is optional. Without it the rest of the app works normally, but clicking `[Fact Check]` on a news article will render a graceful error card. Get a free key at https://aistudio.google.com/apikey.
 
 Generate a strong secret:
 ```bash
@@ -194,10 +208,11 @@ App is now at **http://localhost:5000**
 ## Running with Docker (full stack)
 
 ```bash
-make up        # build images + start all services
-make logs      # follow logs
-make down      # stop (keep data)
-docker compose down -v   # stop + wipe data
+make up-dev        # build images + start all services (port 5000)
+make logs-dev      # follow logs
+make down-dev      # stop (keep data)
+make restart-dev   # down + rebuild + up in one command
+docker compose --profile dev down -v   # stop + wipe data
 ```
 
 | Service | URL |
@@ -253,24 +268,35 @@ make test
 ## All Make Targets
 
 ```bash
-make init          # Create venv + install requirements-dev.txt
-make backend       # Run Flask dev server (port 5000)
+make init              # Create venv + install requirements-dev.txt
+make backend           # Run Flask dev server locally (port 5000)
 
-make up            # Docker Compose up (all services)
-make down          # Docker Compose down
-make build         # Rebuild images (no cache)
-make restart       # down + up
-make logs          # Follow all service logs
-make up-infra      # Start only Postgres + Redis
+# Dev stack (port 5000)
+make up-dev            # Build images + start all services
+make down-dev          # Stop services (keep data)
+make restart-dev       # down + rebuild + up in one command
+make build-dev         # Rebuild images without cache
+make logs-dev          # Follow service logs
+make up-infra          # Start only Postgres + Redis
 
-make test-unit     # pytest tests/unit/ with coverage (threshold: 80%)
-make test-int      # pytest tests/integration/
-make test          # test-unit + test-int
+# E2E stack (isolated, port 5001)
+make up-e2e            # Start isolated E2E environment
+make down-e2e          # Stop E2E environment
+make logs-e2e          # Follow E2E service logs
 
-make lint          # flake8 + mypy
+# Testing
+make test-unit         # pytest tests/unit/ with coverage (threshold: 80%)
+make test-int          # pytest tests/integration/
+make test              # test-unit + test-int
+make test-e2e          # Run Playwright E2E suite (captures server log to e2e-server.log)
+make test-e2e-fresh    # Rebuild E2E stack from scratch + run E2E suite
 
-make shell-db      # psql into the Postgres container
-make shell-redis   # redis-cli into the Redis container
+# Quality
+make lint              # flake8 + mypy
+
+# Database / Redis shells
+make shell-db          # psql into the Postgres container
+make shell-redis       # redis-cli into the Redis container
 ```
 
 ---
@@ -280,18 +306,28 @@ make shell-redis   # redis-cli into the Redis container
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `SESSION_SECRET_KEY` | Yes | — | Signs the session cookie |
-| `OPENROUTER_API_KEY` | Yes | — | OpenRouter API key |
+| `OPENROUTER_API_KEY` | Yes | — | OpenRouter API key — used for chat, Explore / Learn More, and hourly news curation |
 | `OPENROUTER_MODEL` | No | `deepseek/deepseek-chat` | Any OpenRouter model ID |
+| `GOOGLE_API_KEY` | No | — | Google AI API key for the Gemini fact-check pipeline. Optional, but `[Fact Check]` returns a graceful error card if unset. Get a key at https://aistudio.google.com/apikey |
+| `FACT_CHECK_MODEL` | No | `gemini-2.0-flash` | Gemini model used by the ADK fact-check `SequentialAgent` |
 | `DATABASE_URL` | No | `postgresql://postgres:postgres@db:5432/postgres` | PostgreSQL connection |
 | `REDIS_URL` | No | `redis://redis:6379/0` | Redis connection |
 | `FLASK_ENV` | No | `production` | `development` \| `production` \| `testing` |
 
 ### Switching models
 
+OpenRouter (chat, Explore / Learn More, news curation):
 ```bash
+OPENROUTER_MODEL=deepseek/deepseek-chat      # default — fast, cheap
 OPENROUTER_MODEL=deepseek/deepseek-r1        # reasoning model
 OPENROUTER_MODEL=anthropic/claude-sonnet-4-6 # Claude Sonnet
-OPENROUTER_MODEL=google/gemini-2.5-flash     # Gemini Flash
+OPENROUTER_MODEL=google/gemini-2.5-flash     # Gemini Flash via OpenRouter
+```
+
+Google AI (fact-check `SequentialAgent` only):
+```bash
+FACT_CHECK_MODEL=gemini-2.0-flash      # default — fast, cheap
+FACT_CHECK_MODEL=gemini-2.5-flash      # more capable
 ```
 
 ---

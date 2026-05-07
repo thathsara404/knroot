@@ -23,9 +23,23 @@ def init_scheduler(redis_client) -> BackgroundScheduler:
             except Exception as exc:
                 logger.warning("Cache promotion failed for %s: %s", category, exc)
 
+    def _refresh_all():
+        """Fetch fresh articles + AI curate, store as new hour cache."""
+        from backend.api.news.cache import fetch_and_cache
+        for category in NEWS_FEEDS:
+            try:
+                fetch_and_cache(redis_client, category)
+                logger.info("Refreshed and curated news cache for category=%s", category)
+            except Exception as exc:
+                logger.warning("Cache refresh failed for %s: %s", category, exc)
+
     _scheduler.add_job(_promote_all, "interval", hours=1, id="news_cache_promote")
+    _scheduler.add_job(
+        _refresh_all, "interval", hours=1, minutes=30,
+        id="news_cache_refresh", jitter=300,
+    )
     _scheduler.start()
-    logger.info("News cache promotion scheduler started")
+    logger.info("News cache scheduler started (promote + refresh jobs)")
     return _scheduler
 
 

@@ -1,0 +1,140 @@
+{# partials/session_list.html — HTMX fragment, NO extends #}
+{# Variables: sessions (list of dicts; parent_session_id may be None or a UUID string), expand_id (optional str) #}
+{%- set expand_id = expand_id if expand_id is defined else '' -%}
+
+{%- set roots = sessions | selectattr('parent_session_id', 'none') | list -%}
+{%- set ns = namespace(children={}) -%}
+{%- for s in sessions if s.parent_session_id -%}
+  {%- set pid = s.parent_session_id -%}
+  {%- if pid not in ns.children -%}
+    {%- set _ = ns.children.update({pid: []}) -%}
+  {%- endif -%}
+  {%- set _ = ns.children[pid].append(s) -%}
+{%- endfor -%}
+
+{# Count all descendants (recursive) of a node #}
+{% macro descendant_count(sid, children_map) %}
+{%- set kids = children_map.get(sid, []) -%}
+{%- set ns2 = namespace(total=kids | length) -%}
+{%- for k in kids -%}
+  {%- set _ = ns2.__setattr__('total', ns2.total + (children_map.get(k.id, []) | length)) -%}
+{%- endfor -%}
+{{ ns2.total }}
+{%- endmacro %}
+
+{# Recursive macro — renders one session row plus all descendants at any depth #}
+{% macro render_node(s, children_map, expand_id='') %}
+{%- set kids = children_map.get(s.id, []) -%}
+{%- set has_kids = kids | length > 0 -%}
+{%- set total_desc = kids | length -%}
+{%- set starts_open = has_kids and (s.id == expand_id) -%}
+<div {% if has_kids %}x-data="{ open: {{ 'true' if starts_open else 'false' }} }"{% endif %} class="select-none">
+
+  <div class="group relative flex items-center gap-1 px-2">
+    {% if has_kids %}
+    <button
+      type="button"
+      @click.stop="open = !open"
+      class="flex-shrink-0 w-4 h-4 flex items-center justify-center rounded
+             text-gray-500 hover:text-gray-300 hover:bg-gray-700"
+      :aria-label="open ? 'Collapse' : 'Expand'"
+    >
+      <svg class="w-3 h-3 transition-transform" :class="open ? 'rotate-90' : ''"
+           fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+      </svg>
+    </button>
+    {% else %}
+    <span class="flex-shrink-0 w-4"></span>
+    {% endif %}
+
+    {# Quiz sessions link directly to the quiz page; all others load messages via HTMX #}
+    {% if s.session_type == 'quiz' and s.linked_attempt_id %}
+    <a
+      href="/quiz/{{ s.linked_attempt_id }}"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="flex items-center gap-1.5 flex-1 py-1.5 pr-2 text-xs rounded-lg
+             text-gray-300 hover:bg-gray-800 hover:text-white transition-colors truncate"
+    >
+      <span class="flex-shrink-0 leading-none">🧪</span>
+      <span class="truncate">{{ s.title or 'Quiz' }}</span>
+    </a>
+    {% else %}
+    <a
+      href="#"
+      hx-get="/sessions/{{ s.id }}/messages/partial"
+      hx-target="#chat-messages"
+      hx-swap="innerHTML"
+      hx-on::after-request="setActiveSession('{{ s.id }}')"
+      class="flex items-center gap-1.5 flex-1 py-1.5 pr-2 text-xs rounded-lg
+             text-gray-300 hover:bg-gray-800 hover:text-white transition-colors truncate"
+    >
+      <span class="flex-shrink-0 leading-none">
+        {%- if s.session_type == 'news_discussion' -%}📰
+        {%- elif s.session_type == 'learn_more' -%}⚡
+        {%- else -%}💬{%- endif -%}
+      </span>
+      <span class="truncate">{{ s.title or s.topic or 'New Chat' }}</span>
+      {% if has_kids %}
+      <span class="flex-shrink-0 ml-auto text-xs text-gray-600 pr-1">{{ total_desc }}</span>
+      {% endif %}
+    </a>
+    {% endif %}
+
+    {# Action buttons — visible on row hover #}
+    <div class="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 flex-shrink-0">
+      {# Regenerate — learn_more and quiz sessions only #}
+      {% if s.session_type in ('learn_more', 'quiz') %}
+      <button
+        type="button"
+        onclick="regenerateSession('{{ s.id }}', '{{ s.session_type }}')"
+        class="p-1 rounded text-gray-500 hover:text-amber-400 hover:bg-gray-800"
+        title="Regenerate response"
+        aria-label="Regenerate"
+      >
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+      </button>
+      {% endif %}
+
+      {# Delete — passes descendant count so the confirm dialog is specific #}
+      <button
+        type="button"
+        onclick="deleteSession('{{ s.id }}', {{ total_desc }})"
+        class="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-gray-800"
+        title="Delete{% if has_kids %} (and {{ total_desc }} sub-thread{{ 's' if total_desc != 1 else '' }}){% endif %}"
+        aria-label="Delete"
+      >
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  {% if has_kids %}
+  <div x-show="open" x-cloak class="ml-4 border-l border-gray-700 pl-1 space-y-0.5 mt-0.5">
+    {% for child in kids %}
+      {{ render_node(child, children_map, expand_id) }}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+</div>
+{% endmacro %}
+
+{% if not roots %}
+<div class="px-4 py-8 text-center text-gray-500 text-sm">
+  <p class="font-medium">No chats yet</p>
+  <p class="mt-1 text-xs">Click + to start a new conversation</p>
+</div>
+{% else %}
+<div class="py-1 space-y-0.5">
+  {% for s in roots %}
+    {{ render_node(s, ns.children, expand_id) }}
+  {% endfor %}
+</div>
+{% endif %}

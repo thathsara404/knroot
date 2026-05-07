@@ -1,8 +1,8 @@
 # Knowledge Root — Architecture Document
 
-> **Scope:** Reshaping the existing AI chat agent into a full-featured tech-learning platform with authentication, chat history, smart news caching, and an adaptive knowledge-check system.
+> **Scope:** Reshaping the existing AI chat agent into a full-featured tech-learning platform with authentication, chat history, smart news caching, a multi-agent knowledge pipeline, and an adaptive knowledge-check system.
 >
-> **Baseline stack:** Flask · PostgreSQL · LangGraph · OpenRouter LLM · Jinja2 + HTMX + Alpine.js · Docker Compose
+> **Baseline stack:** Flask · PostgreSQL · Redis · LangGraph (chat) · Google ADK (fact-check) · OpenRouter (DeepSeek) · Google AI (Gemini 2.0 Flash) · Jinja2 + HTMX + Alpine.js · Docker Compose
 
 ---
 
@@ -718,8 +718,11 @@ services:
   web:
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}   # signs session cookies
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}                # signs session cookies
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}                # DeepSeek for chat / discuss / curation
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-deepseek/deepseek-chat}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}                        # optional — Gemini for fact-check (Layer 5)
+      - FACT_CHECK_MODEL=${FACT_CHECK_MODEL:-gemini-2.0-flash}  # Gemini model used by ADK fact-check
       - FLASK_ENV=${FLASK_ENV:-production}
     depends_on:
       db:
@@ -899,33 +902,32 @@ DB news_cache.cache_key examples:
 ### 16.4 Updated NewsPanel Layout
 
 ```
-┌──────────────────────────────────────┐
-│  [AI]  [Programming]  [Political]    │  ← tab group
-│                                       │
-│  Updated 12 min ago  [↺ Refresh]     │
-│                                       │
-│  ■ HuggingFace Blog                  │  ← source header
-│  ┌──────────────────────────────┐    │
-│  │ Introducing SmolVLM          │    │  ← article card
-│  │ A compact vision-language... │    │
-│  │ 3h ago · [↗ Source]  [Discuss]│  │
-│  └──────────────────────────────┘    │
-│                                       │
-│  ■ ArXiv AI                          │
-│  ┌──────────────────────────────┐    │
-│  │ Flash Attention 3.0          │    │
-│  │ New IO-aware exact attention │    │
-│  │ 1h ago · [↗ Source]  [Discuss]│  │
-│  └──────────────────────────────┘    │
-└──────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│  [AI]   [Dev]   [World]                  │  ← tab group
+│                                           │
+│  ┌──────────────────────────────────┐    │
+│  │ HuggingFace Blog · 3h ago        │    │  ← source · date header
+│  │                                  │    │
+│  │ Introducing SmolVLM              │    │  ← title
+│  │ A compact vision-language model  │    │  ← description
+│  │ for on-device inference...       │    │
+│  │                                  │    │
+│  │ [Read article] [Explore] [Fact ✓]│    │  ← action row
+│  └──────────────────────────────────┘    │
+│                                           │
+│  ┌──────────────────────────────────┐    │
+│  │ ArXiv AI · 1h ago                │    │
+│  │ Flash Attention 3.0              │    │
+│  │ New IO-aware exact attention...  │    │
+│  │ [Read article] [Explore] [Fact ✓]│    │
+│  └──────────────────────────────────┘    │
+└──────────────────────────────────────────┘
 ```
 
-Each article card exposes:
-- Title (linked to original source)
-- 2-line summary
-- Relative timestamp
-- `[↗ Source]` — opens article URL in new tab
-- `[Discuss]` — triggers the discussion flow described in §17
+Each article card exposes three actions:
+- `[Read article]` — opens article URL in a new tab (`rel="noopener noreferrer"`)
+- `[Explore]` — triggers Layer 4 (`POST /news/discuss`); creates a `news_discussion` session and renders the sectioned response in the chat pane
+- `[Fact Check]` — triggers Layer 5 (`POST /news/fact-check`); runs the ADK Search → Verdict pipeline and renders a verdict card in-place under the article (verified / disputed / unverifiable claims with source links)
 
 ---
 
@@ -1431,3 +1433,178 @@ This prevents the user from accidentally opening duplicate tabs for the same sec
 
 **Why does the hierarchical MCQ span the full root-to-current path, not just the current topic?**
 Learning is cumulative. If the user is 3 levels deep studying "50 U.S.C. §§ 1541–1548", they should also be tested on "War Powers Resolution Act" (level 1) and "US military operations" (root context). The quiz reinforces the full reasoning chain, not just the terminal concept.
+
+---
+
+## 25. AI Architecture
+
+The system has **five distinct AI/data layers** that operate independently. The originally-planned ADK Research → FactCheck → Editor pipeline was **not shipped** — what is implemented is the simpler, more direct architecture below.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Layer 1: APScheduler (hourly RSS fetch — NO AI)                │
+│  feedparser → 3 articles per source × 5 sources × 3 categories  │
+│  Redis: news:hour:YYYY-MM-DD-HH:category (TTL 1h)               │
+│         news:day:YYYY-MM-DD:category    (TTL 24h)               │
+│  Jobs: promote_hour_to_day + fetch_and_cache (every hour)       │
+└─────────────────────────────────┬───────────────────────────────┘
+                                  │ cached articles
+┌─────────────────────────────────▼───────────────────────────────┐
+│  Layer 2: AI News Curation (DeepSeek via OpenRouter, hourly)    │
+│  curate_with_ai() in backend/api/news/cache.py                  │
+│  Ranks articles by importance for technical audience            │
+│  NEWS_CURATION_PROMPT → reorders cached list                    │
+│  Falls back to original RSS order on LLM failure                │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Layer 3: LangGraph ReAct Agent (DeepSeek via OpenRouter)       │
+│  POST /chat → compiled.invoke() → PostgreSQL checkpoint          │
+│  Single StateGraph in backend/agent/graph.py:                    │
+│    nodes: agent (DeepSeek call) + tools (ToolNode)               │
+│  Tool: get_latest_ai_news (reads Redis cache mid-conversation)   │
+│  First message of new session: top 5 cached headlines injected   │
+│  Used for: regular chat, news_discussion follow-up turns         │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Layer 4: Direct LLM Pipeline (DeepSeek) — Explore / Learn More │
+│  _run_discussion_pipeline() in backend/api/discuss/service.py   │
+│  Direct DeepSeek call (NO LangGraph graph traversal)            │
+│  DISCUSSION_PROMPT / LEARN_MORE_PROMPT → sectioned JSON          │
+│  POST /news/discuss              (Explore button on article)     │
+│  POST /sessions/<id>/learn-more  (Explore on a section card)     │
+│  First exchange stored in LangGraph checkpoint via update_state │
+│  (no second LLM call to persist — direct write-through)         │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Layer 5: ADK Fact-Check Pipeline (Gemini 2.0 Flash, on-demand) │
+│  backend/agent/pipeline.py — SequentialAgent with 2 sub-agents: │
+│    1. Search Agent — Gemini + native google_search ADK tool      │
+│       searches Google for 3–4 key claims in the article          │
+│    2. Verdict Agent — Gemini evaluates findings, rates each      │
+│       claim (verified/disputed/unverifiable), returns JSON       │
+│  Triggered ONLY by [Fact Check] button on news article cards    │
+│  Requires GOOGLE_API_KEY; gracefully returns error card if unset│
+│  Completely separate from chat / discuss flow                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 25.1 Layer 1 — Hourly RSS Cache (no AI)
+
+`feedparser` pulls **3 articles per source** from RSS feeds (5 sources × 3 categories = 15 articles per category). Two APScheduler jobs run hourly:
+
+| Job | Purpose |
+|-----|---------|
+| `promote_hour_to_day` | Merges the previous hour's cache into the day cache and extends TTL until midnight UTC |
+| `fetch_and_cache` | Fetches fresh RSS articles, dedupes by link, runs Layer 2 curation, writes to Redis (and the `news_cache` DB fallback) |
+
+Redis keys:
+- `news:hour:{YYYY-MM-DD-HH}:{category}` — TTL 1 hour
+- `news:day:{YYYY-MM-DD}:{category}` — TTL until midnight UTC
+
+### 25.2 Layer 2 — AI News Curation
+
+After each RSS fetch, `curate_with_ai()` in `backend/api/news/cache.py` calls DeepSeek with `NEWS_CURATION_PROMPT`. The model ranks the freshly fetched articles by importance for a technical audience and returns a re-ordered list. The cache is then rewritten so the most impactful headlines appear first. If the LLM call fails, the original RSS order is preserved (no service interruption).
+
+### 25.3 Layer 3 — LangGraph ReAct Agent
+
+The chat agent in `backend/agent/graph.py` is a single `StateGraph` with two nodes:
+
+| Node | Role |
+|------|------|
+| `agent` | Calls DeepSeek with the conversation history + system prompt |
+| `tools` | LangGraph `ToolNode` that executes any tool calls returned by the agent |
+
+A conditional edge routes from `agent` → `tools` when the model requests a tool, then back to `agent`. The single tool, `get_latest_ai_news`, reads from the Redis cache (Layer 1) so the agent can reference current headlines mid-conversation.
+
+**State persistence:** all conversation history is stored via `PostgresSaver` (LangGraph's PostgreSQL checkpointer). Sessions survive server restarts; the checkpointer is keyed by `thread_id`, which equals the `chat_sessions.id` row.
+
+**News injection:** when a session has no prior messages, the first `system` message includes the top 5 cached AI headlines so the agent has fresh context without needing to call the tool.
+
+This layer powers `POST /chat` and any follow-up turns inside a `news_discussion` session.
+
+### 25.4 Layer 4 — Direct LLM Pipeline (Explore / Learn More)
+
+The Explore and Learn More flows do **not** go through LangGraph. `_run_discussion_pipeline()` in `backend/api/discuss/service.py` makes a direct DeepSeek call with the appropriate prompt:
+
+- `DISCUSSION_PROMPT` — for `POST /news/discuss` (Explore button on a news card)
+- `LEARN_MORE_PROMPT` — for `POST /sessions/<id>/learn-more` (Explore on a section card)
+
+Both prompts return **structured sectioned JSON** (intro, 3–5 sections, outro — see §18). After the call, the response is validated and the first exchange is written into the LangGraph checkpoint via `update_state` so subsequent turns in the session can use Layer 3 with the full history. There is no second LLM call to persist the message — the direct call's output is the stored content.
+
+### 25.5 Layer 5 — ADK Fact-Check Pipeline (on-demand)
+
+`backend/agent/pipeline.py` defines a Google ADK `SequentialAgent` with two sub-agents, both running Gemini 2.0 Flash:
+
+| Sub-agent | Tool | Output |
+|-----------|------|--------|
+| **Search Agent** | Native `google_search` ADK tool | Raw search results for 3–4 key claims extracted from the article |
+| **Verdict Agent** | None (LLM-only reasoning) | Structured JSON: each claim rated `verified` / `disputed` / `unverifiable` with source links |
+
+Triggered **only** by the `[Fact Check]` button on news article cards (`POST /news/fact-check`). Requires `GOOGLE_API_KEY` to be set; without it the endpoint returns a graceful error card so the rest of the app keeps working. This pipeline is completely isolated from the chat/discuss flow — it never writes to `chat_sessions` or LangGraph state.
+
+### 25.6 Agent Package Structure
+
+```
+backend/agent/
+├── graph.py         ← LangGraph StateGraph (Layer 3 — chat agent + checkpointer)
+├── pipeline.py      ← Google ADK SequentialAgent (Layer 5 — Search + Verdict)
+├── prompts.py       ← All prompt constants:
+│                       SYSTEM_PROMPT (Layer 3 chat)
+│                       AUTO_TITLE_PROMPT
+│                       NEWS_CURATION_PROMPT (Layer 2)
+│                       DISCUSSION_PROMPT (Layer 4 — Explore)
+│                       LEARN_MORE_PROMPT (Layer 4 — Learn More)
+│                       MCQ_GENERATION_PROMPT, RELEARN_PROMPT
+│                       FACT_CHECK_SEARCH_PROMPT (Layer 5)
+│                       FACT_CHECK_VERDICT_PROMPT (Layer 5)
+└── tools.py         ← LangChain @tool: get_latest_ai_news
+```
+
+### 25.7 Three-Pane Layout
+
+The app uses a full-screen three-pane layout. The left sidebar is collapsible:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  [☰]  Knowledge Root                                    Sign Out     │  ← nav
+├────────────────┬─────────────────────────────┬──────────────────────┤
+│  LEFT SIDEBAR  │      CHAT (centre)           │  NEWS PANEL (right)  │
+│  w-64 fixed    │      flex-1                  │  w-80 fixed          │
+│  (toggleable)  │                              │                      │
+│                │  Message thread              │  [AI][Dev][World]    │
+│  [+ New Chat]  │  (HTMX append)               │  ─────────────────   │
+│  ──────────    │                              │  Article cards:      │
+│  Today         │  ┌──────────────────────┐    │  source · date       │
+│  ├─ Chat A     │  │ Sectioned AI response│    │  title               │
+│  │  ├─ Sub 1   │  │ ⚡ Concept 1         │    │  description         │
+│  │  └─ Sub 2   │  │   [Explore]          │    │  [Read article]      │
+│  └─ 📰 News X  │  │ ⚡ Concept 2         │    │  [Explore]           │
+│     ├─ Sub 1   │  │   [Explore]          │    │  [Fact Check]        │
+│  Yesterday     │  └──────────────────────┘    │                      │
+│  └─ Chat B     │                              │                      │
+│                │  [Type a message...]  [Send] │                      │
+└────────────────┴─────────────────────────────┴──────────────────────┘
+```
+
+Sidebar toggle (Alpine.js + CSS transition):
+- Desktop: open by default; `[☰]` button collapses it with a smooth transition
+- Mobile: always starts collapsed; hamburger shows it as an overlay drawer
+- State persisted in `localStorage`
+- Hierarchical session tree: `news_discussion` roots have an expand/collapse arrow that hides their `learn_more` children
+
+The chat input bar in the centre pane is **always visible** even when no session is active — sending a message auto-creates a `regular` session before delivering the first turn.
+
+---
+
+## 26. New Dependencies
+
+```
+# requirements.txt additions
+google-adk>=0.5   # Google ADK — fact-check SequentialAgent (Layer 5)
+litellm>=1.40     # LiteLlm routing (available for future use)
+```
+
+`google-adk` provides the `SequentialAgent`, `LlmAgent`, and the native `google_search` tool used by the Layer 5 fact-check pipeline. The `litellm` dependency is installed as a transitive requirement of `google-adk` and is available for future routing of non-Gemini models through ADK if needed.

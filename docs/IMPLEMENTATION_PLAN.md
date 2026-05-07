@@ -1246,3 +1246,296 @@ Every PR triggers `.github/workflows/ci.yml`:
 No separate frontend lint or test jobs — Flask/Python linting covers all application code. Tailwind, HTMX, and Alpine.js are CDN-loaded and have no local build artefacts to lint.
 
 Coverage threshold: **80% line coverage** for backend (agent, LLM, and unimplemented blueprint code is excluded via `.coveragerc`).
+
+---
+
+## Phase 7 — 3-Pane UI + Sessions + Chat + News + Discuss / Learn More (`feature/three-pane-ui`)
+
+> **Status:** ✅ shipped — but with a different architecture than originally planned.
+>
+> **Original plan:** Every AI response would pass through a Google ADK `SequentialAgent` with three sub-agents (Research → Fact Check → Editor) before reaching the user.
+>
+> **What actually shipped:** the unified ADK pipeline was abandoned in favour of a simpler, more direct architecture (see `ARCHITECTURE.md §25`). Each surface now has its own purpose-built layer:
+>
+> | Surface | Implementation |
+> |---------|---------------|
+> | Chat (`POST /chat`) | LangGraph ReAct agent — single `StateGraph` with `agent` + `tools` nodes (DeepSeek via OpenRouter) |
+> | Explore / Learn More (`POST /news/discuss`, `POST /sessions/<id>/learn-more`) | Direct DeepSeek call in `_run_discussion_pipeline()` — no LangGraph traversal; first exchange written into checkpoint via `update_state` |
+> | Hourly news curation | DeepSeek call in `curate_with_ai()` — re-orders RSS articles by importance |
+> | Fact-Check button | Google ADK `SequentialAgent` with Search Agent (Gemini + native `google_search` tool) and Verdict Agent (Gemini) — runs on-demand, completely separate from chat/discuss |
+>
+> **Why the change:**
+> - LangGraph reverted to a single ReAct agent for chat — the multi-agent pipeline was overkill for conversational replies and added latency without quality wins.
+> - The "fact-check" idea moved out of the chat hot-path and into a user-initiated `[Fact Check]` button on news cards, where Google's native `google_search` tool + Gemini gives genuinely verifiable claims with sources.
+> - Sectioned responses for Explore / Learn More are produced by a single direct LLM call — the structured-JSON validation already prevents malformed output, and a multi-stage editor pass was not necessary in practice.
+
+### Goal
+Deliver the full working application: collapsible sidebar with hierarchical session tree, AI chat in the centre pane (always-visible input — auto-creates session on first message), and a news panel on the right with three-tab categories and per-card `[Read article]`, `[Explore]`, `[Fact Check]` buttons.
+
+### Current State (start of Phase 7)
+- ✅ Phase 1 (auth) complete — register, login, logout, E2E green
+- ✅ `backend/api/chat/service.py` — `send_message()`, `get_or_create_session()`, `auto_title_session()` implemented
+- ✅ `backend/api/news/` — service, cache, feeds all implemented
+- ✅ `backend/agent/prompts.py` — DISCUSSION_PROMPT, LEARN_MORE_PROMPT, MCQ_GENERATION_PROMPT all defined
+- ❌ DB migrations 002–005 missing
+- ❌ `backend/api/sessions/routes.py` + `service.py` — stubs only
+- ❌ `backend/api/discuss/routes.py` + `service.py` — stubs only
+- ❌ `backend/api/quiz/routes.py` + `service.py` + `generator.py` — stubs only
+- ❌ `backend/agent/pipeline.py` (Google ADK fact-check) — does not exist
+- ❌ All templates — placeholder dashboard only, no 3-pane layout
+
+### New Files
+
+#### Backend
+```
+backend/migrations/002_chat_sessions.sql
+backend/migrations/003_news_cache.sql
+backend/migrations/004_mcq_attempts.sql
+backend/migrations/005_session_hierarchy.sql
+backend/api/sessions/routes.py
+backend/api/sessions/service.py
+backend/api/discuss/routes.py
+backend/api/discuss/service.py
+backend/api/quiz/routes.py
+backend/api/quiz/service.py
+backend/api/quiz/generator.py
+backend/agent/pipeline.py
+backend/agent/quiz_agent.py
+```
+
+#### Templates & Static
+```
+backend/templates/app/index.html          ← full 3-pane layout (replaces placeholder)
+backend/templates/learn/session.html      ← /learn/<id> with knowledge tree right pane
+backend/templates/partials/session_list.html
+backend/templates/partials/message.html
+backend/templates/partials/sectioned_message.html
+backend/templates/partials/news_panel.html
+backend/templates/partials/knowledge_tree.html
+backend/templates/partials/quiz_section.html
+backend/static/app.js                     ← extended with sidebar toggle, chat, quiz logic
+```
+
+### Backend Implementation Tasks
+
+#### 7.1 DB Migrations
+
+**002_chat_sessions.sql**
+```sql
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID REFERENCES users(id) ON DELETE CASCADE,
+    thread_id       VARCHAR(255) UNIQUE NOT NULL DEFAULT gen_random_uuid()::text,
+    title           VARCHAR(255),
+    session_type    VARCHAR(20) NOT NULL DEFAULT 'regular',
+    parent_session_id UUID REFERENCES chat_sessions(id),
+    root_session_id   UUID REFERENCES chat_sessions(id),
+    depth_level       INTEGER NOT NULL DEFAULT 0,
+    topic             VARCHAR(500),
+    news_article_id   VARCHAR(20),
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW(),
+    last_message_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_last ON chat_sessions(user_id, last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_parent    ON chat_sessions(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_root      ON chat_sessions(root_session_id);
+```
+
+**003_news_cache.sql** — news_cache table (existing design from §4.4)
+
+**004_mcq_attempts.sql** — mcq_attempts with scope_sessions + relearn_cache (§21)
+
+**005_session_hierarchy.sql** — no-op (already merged into 002 above)
+
+#### 7.2 Sessions API (`backend/api/sessions/`)
+
+**service.py**
+- `create_session(user_id, session_type, parent_id, topic, news_article_id) → dict`
+- `list_sessions(user_id) → list[dict]` — includes hierarchy columns
+- `get_session(user_id, session_id) → dict | None`
+- `rename_session(user_id, session_id, title) → None` — 403 on not-owned
+- `delete_session(user_id, session_id) → None` — 403 on not-owned
+- `get_messages(user_id, session_id) → list[dict]` — replays LangGraph state
+
+**routes.py** — Blueprint('/sessions')
+```
+POST   /sessions                    → create_session()
+GET    /sessions                    → list_sessions()
+PATCH  /sessions/<id>               → rename_session()
+DELETE /sessions/<id>               → delete_session()
+GET    /sessions/<id>/messages      → get_messages()
+GET    /sessions/partial            → render partials/session_list.html (HTMX)
+GET    /sessions/<id>/messages/partial → render partials/message.html list (HTMX)
+GET    /sessions/<id>/tree          → get_tree() JSON
+```
+
+#### 7.3 Discuss API (`backend/api/discuss/`)
+
+**service.py**
+- `news_discuss(user_id, article_id, title, summary, link) → dict`
+  1. Create `news_discussion` session row (set root_session_id = self.id)
+  2. Run pipeline with article context → parse sectioned JSON
+  3. Store first message in LangGraph checkpoint
+  4. Return `{session_id, title, first_response}`
+- `create_learn_more(user_id, parent_session_id, topic) → dict`
+  1. Verify ownership + load parent row
+  2. Create `learn_more` session (depth + 1)
+  3. Run pipeline with topic → sectioned JSON first response
+  4. Return `{session_id, title}`
+- `get_tree(user_id, session_id) → list[dict]`
+
+**routes.py** — register on main Blueprint
+```
+POST  /news/discuss                       → news_discuss()
+POST  /sessions/<id>/learn-more           → create_learn_more()
+GET   /sessions/<id>/tree                 → get_tree()
+GET   /sessions/<id>/tree/partial         → render partials/knowledge_tree.html (HTMX)
+```
+
+#### 7.4 Chat Service (`backend/api/chat/`)  ✅ shipped
+
+`send_message()` flow (no ADK pipeline — direct LangGraph call):
+- Always invokes the LangGraph ReAct agent (`backend/agent/graph.py`)
+- For a brand-new session, the system prompt includes the top 5 cached AI headlines so the agent has fresh context
+- The agent may call `get_latest_ai_news` mid-conversation via the `tools` node
+- Plain markdown response is returned and appended via HTMX `beforeend` swap on `#messages`
+- Always-visible chat input bar — sending a message with no `session_id` auto-creates a `regular` session before delivering the first turn
+
+Routes:
+```
+POST /chat                              → send_message() — returns rendered message partial
+GET  /sessions/<id>/messages/partial    → renders partial HTML message list
+```
+
+#### 7.5 Discuss Service (`backend/api/discuss/`)  ✅ shipped — direct LLM, not ADK
+
+`_run_discussion_pipeline()` in `backend/api/discuss/service.py` makes a **direct DeepSeek call** (no LangGraph graph traversal). The flow:
+1. Build the prompt — `DISCUSSION_PROMPT` (Explore from a news article) or `LEARN_MORE_PROMPT` (Learn More from a section topic)
+2. Single DeepSeek call via `build_llm_client()`
+3. Validate the returned sectioned JSON (`type=sectioned`, `intro`, `sections[]`, `outro`)
+4. Write the first user message + AI response into the LangGraph checkpoint via `update_state` so subsequent turns can use Layer 3 (the chat ReAct agent) with full history
+5. Return `{session_id, title, first_response}`
+
+Routes:
+```
+POST /news/discuss                       → news_discuss() — sectioned first response from article
+POST /sessions/<id>/learn-more           → create_learn_more() — sectioned first response from topic
+GET  /sessions/<id>/tree                 → get_tree()
+```
+
+#### 7.6 ADK Fact-Check Pipeline (`backend/agent/pipeline.py`)  ✅ shipped
+
+A `SequentialAgent` with two Gemini sub-agents — completely separate from chat/discuss:
+- **Search Agent** — Gemini 2.0 Flash + native `google_search` ADK tool. Extracts 3–4 key claims from the article and runs Google searches for each.
+- **Verdict Agent** — Gemini 2.0 Flash. Reads the search results and produces structured JSON: each claim rated `verified` / `disputed` / `unverifiable` with source links.
+
+Triggered only by `POST /news/fact-check` (the `[Fact Check]` button on each news card). Requires `GOOGLE_API_KEY` — without it the endpoint returns a graceful error card so the rest of the app keeps working.
+
+Add to `backend/agent/prompts.py`:
+- `NEWS_CURATION_PROMPT` — DeepSeek prompt that re-ranks freshly fetched RSS articles by importance (called by `curate_with_ai()` in `backend/api/news/cache.py` once per hour)
+- `FACT_CHECK_SEARCH_PROMPT` — Search Agent system prompt
+- `FACT_CHECK_VERDICT_PROMPT` — Verdict Agent system prompt
+
+#### 7.7 Hourly News Curation (`backend/api/news/cache.py`)  ✅ shipped
+
+After each RSS fetch in the `fetch_and_cache` APScheduler job, `curate_with_ai()` calls DeepSeek with `NEWS_CURATION_PROMPT` to re-rank the articles by importance for a technical audience. The cache is rewritten with the curated order. On any LLM failure the original RSS order is preserved — no service interruption.
+
+### Frontend Implementation Tasks
+
+#### 7.7 Three-Pane Layout — `backend/templates/app/index.html`
+
+Full-height layout using Tailwind flex:
+```html
+<div class="flex h-screen overflow-hidden" x-data="appState()">
+  <!-- LEFT SIDEBAR -->
+  <aside class="..." :class="sidebarOpen ? 'w-64' : 'w-0'" ...>
+    ...sidebar contents (HTMX-loaded session list)...
+  </aside>
+  
+  <!-- CENTRE PANE -->
+  <main class="flex flex-col flex-1 min-w-0 overflow-hidden">
+    ...chat messages + input bar...
+  </main>
+
+  <!-- RIGHT PANE -->
+  <aside class="w-80 flex-shrink-0 border-l ...">
+    ...news panel (HTMX-loaded)...
+  </aside>
+</div>
+```
+
+Alpine.js `appState()` in `app.js`:
+- `sidebarOpen` — persisted in `localStorage`
+- `activeSessionId` — currently active chat
+- `loadSession(id)` — HTMX-triggered session switch
+
+#### 7.8 Session List Partial — `partials/session_list.html`
+
+Groups by Today / Yesterday / This Week / Older. Renders hierarchy:
+- `regular` sessions: plain title
+- `news_discussion` sessions: `📰` prefix, collapsible children
+- `learn_more` sessions: `⚡` prefix, indented `depth * 16px`
+
+Loaded via `hx-get="/sessions/partial" hx-trigger="load"` from the left sidebar.
+
+#### 7.9 Chat Interface — messages + input bar
+
+Messages loaded: `hx-get="/sessions/{id}/messages/partial" hx-trigger="load"` on session select.
+
+Submit: `hx-post="/chat" hx-target="#messages" hx-swap="beforeend"`
+
+After submit: server returns either:
+- `partials/message.html` (plain response)
+- `partials/sectioned_message.html` (pipeline response)
+
+#### 7.10 Sectioned Message Partial — `partials/sectioned_message.html`
+
+Each section card rendered with Alpine.js state `{loading: false, opened: false}`:
+- **[Explore →]**: `hx-post="/sessions/{id}/learn-more"`, on success `window.open('/learn/{new_id}', '_blank')`, button becomes disabled with ✓
+- **[Quiz]**: `hx-post="/chat/quiz-section" hx-target="#quiz-{section_id}" hx-swap="innerHTML"`, inline MCQ cards appear below section
+
+#### 7.11 News Panel Partial — `partials/news_panel.html`
+
+3-tab group (Alpine.js local state `{tab: 'ai'}`). Internal cache keys remain `ai`/`programming`/`political`; UI labels are **AI / Dev / World**:
+```html
+<div x-data="{tab: 'ai'}">
+  <button @click="tab='ai'"          :class="...">AI</button>
+  <button @click="tab='programming'" :class="...">Dev</button>
+  <button @click="tab='political'"   :class="...">World</button>
+
+  <div x-show="tab==='ai'" hx-get="/news/partial?category=ai" hx-trigger="intersect once"></div>
+  ...
+</div>
+```
+
+Each article card (redesigned layout):
+- Header row: source · relative date
+- Title (plain text)
+- Description (2–3 line summary)
+- Action row with three buttons:
+  - `[Read article]` — opens article URL in a new tab (`rel="noopener noreferrer"`)
+  - `[Explore]` — `hx-post="/news/discuss"`, on success sets active session and renders the sectioned first_response in the chat pane
+  - `[Fact Check]` — `hx-post="/news/fact-check"`, runs the ADK Search → Verdict pipeline; verdict card swaps in below the article card
+
+### Phase 7 Completion Criteria
+- [x] Sidebar opens/closes with smooth transition; state persists in `localStorage`
+- [x] Sidebar shows hierarchical sessions (regular, 📰 news_discussion, ⚡ learn_more) with expand/collapse on `news_discussion` roots
+- [x] Always-visible chat input — sending a message with no active session auto-creates a `regular` session
+- [x] Chat sends a message and receives a plain markdown response from the LangGraph ReAct agent
+- [x] LangGraph agent can call `get_latest_ai_news` mid-conversation; first message of a new session injects top 5 cached headlines into the system prompt
+- [x] Right pane shows News panel with 3 working tabs (AI / Dev / World)
+- [x] Each article card has `[Read article]`, `[Explore]`, `[Fact Check]` buttons
+- [x] Hourly news curation re-ranks RSS articles by importance via DeepSeek
+- [x] `[Explore]` creates a `news_discussion` session and renders the sectioned first response (direct DeepSeek call, not ADK)
+- [x] Sectioned response cards have a working `[Explore]` button that opens `/learn/<id>` in a new tab
+- [x] `/learn/<id>` route uses the same 3-pane layout
+- [x] `[Fact Check]` triggers the ADK `SequentialAgent` (Search + Verdict) and renders a verdict card in-place
+- [x] `[Fact Check]` returns a graceful error card when `GOOGLE_API_KEY` is unset
+
+### Items Deferred from the Original Phase 7 Plan
+The following were specified in the original plan but were **not shipped** — they were superseded by simpler designs or moved to a later phase:
+
+- ❌ Single ADK `SequentialAgent` covering every chat reply (Research → Fact Check → Editor) — replaced by the layered design in `ARCHITECTURE.md §25`. The chat path uses LangGraph; only the on-demand `[Fact Check]` button uses ADK.
+- ❌ Inline per-section `[Quiz]` button on sectioned responses (`POST /chat/quiz-section`, `quiz_agent.py`) — not implemented. MCQ generation remains a separate full-page quiz flow (Phase 4 / hierarchical quiz in Phase 6).
+- ❌ `confidence` field on each section, threshold-based section dropping — not implemented. Section validation is structural only (intro / sections / outro / learn_more_topic).

@@ -1,0 +1,30 @@
+{# partials/messages.html — HTMX fragment, NO extends #}
+{# Variables: messages (list of {role, content, content_type, content_data}), session (dict) #}
+{% if not messages %}
+<div class="flex items-center justify-center h-full text-gray-400">
+  <p class="text-sm">Start the conversation below</p>
+</div>
+{% endif %}
+{% for msg in messages %}
+{% if msg.role == 'user' %}
+<div class="flex justify-end mb-3">
+  <div class="max-w-lg bg-indigo-600 text-white rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm whitespace-pre-wrap">
+    {{ msg.content }}
+  </div>
+</div>
+{% else %}
+  {% if msg.content_type == 'sectioned' and msg.content_data %}
+    {% set data = msg.content_data %}
+    {% set session_id = session.id if session else '' %}
+    {% include 'partials/sectioned_message.html' %}
+  {% else %}
+<div class="flex justify-start mb-3">
+  <div class="max-w-2xl w-full">
+    <div class="bg-white border border-gray-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm">
+      <p class="text-sm text-gray-800 whitespace-pre-wrap">{{ msg.content }}</p>
+    </div>
+  </div>
+</div>
+  {% endif %}
+{% endif %}
+{% endfor %}

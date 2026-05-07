@@ -14,6 +14,8 @@
   <!-- HTMX (CDN — HTML-over-the-wire) -->
   <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
 
+  <style>[x-cloak] { display: none !important; }</style>
+
   {% block head %}{% endblock %}
 </head>
 <body class="min-h-screen bg-gray-50 text-gray-900 antialiased">
@@ -33,6 +35,7 @@
 
   <script src="{{ url_for('static', filename='toast.js') }}"></script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='quiz.js') }}"></script>
 
   {% block scripts %}{% endblock %}
 </body>

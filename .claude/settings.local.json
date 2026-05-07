@@ -11,7 +11,12 @@
       "Bash(python3 *)",
       "Bash(npx vitest *)",
       "Bash(Remove-Item -Recurse -Force \"D:\\\\code-setup\\\\ai-agent\\\\frontend\" -ErrorAction SilentlyContinue)",
-      "Bash(Write-Host \"frontend/ removed\")"
+      "Bash(Write-Host \"frontend/ removed\")",
+      "PowerShell(New-Item *)",
+      "Bash(cd /d \"D:\\\\code-setup\\\\ai-agent\")",
+      "Bash(where python *)",
+      "Bash(where python3 *)",
+      "Bash(ls /usr/bin/python*)"
     ]
   }
 }
