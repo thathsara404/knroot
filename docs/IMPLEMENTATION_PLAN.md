@@ -1755,6 +1755,83 @@ test('follow accepted updates button state live for the requester')
 
 ---
 
+## Phase 16 — Wall UX Polish & Nested Comments (`feature/auth`)
+
+### Goal
+
+Five improvements: live new-post notification banner, nested comment replies (2 levels), profile recent shares capped at 3, `share_created` SSE event, and private-wall vote correctly updating the public-wall card.
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `backend/migrations/014_comment_replies.sql` | Add `parent_comment_id` to `share_comments` |
+
+### Modified Files
+
+| File | Change |
+|------|--------|
+| `backend/api/wall/service.py` | `create_share` broadcasts `share_created`; `add_comment` accepts `parent_comment_id`; `_serialize_comment` includes it; `list_comments` selects it; `get_profile` LIMIT 3 |
+| `backend/api/wall/routes.py` | `add_comment` extracts `parent_comment_id` from request body |
+| `backend/templates/app/index.html` | `window._currentUserId` script tag; new posts banner above `#chat-messages` |
+| `backend/templates/partials/share_card.html` | `replyingTo`/`replyText` in x-data; nested x-for comments with inline reply forms |
+| `backend/static/app.js` | `newWallPosts` in appState; `_getAppData` uses `Alpine.$data`; `switchTab` resets counter; `submitShare` reloads walls; `wallInitSSE` adds `share_created` listener; `wallPostComment` accepts `parentCommentId` |
+
+### Backend Tasks
+
+#### 16.1 `share_created` SSE event
+
+After inserting the share, `create_share()` calls:
+```python
+broadcast_event("share_created", {
+    "share_id": str(row["id"]),
+    "user_id": str(user_id),
+    "author_name": ...,
+    "author_username": ...,
+})
+```
+
+#### 16.2 Nested comments
+
+Migration adds `parent_comment_id UUID REFERENCES share_comments(id) ON DELETE CASCADE`. `add_comment` validates the parent belongs to the same share before inserting. `list_comments` returns a flat list ordered by `created_at ASC`; client-side filter expressions in Alpine `x-for` group replies under their parent.
+
+#### 16.3 Profile recent shares
+
+`get_profile()` LIMIT changed from 5 → 3. Users can see all their shares on the private wall.
+
+### Frontend Tasks
+
+#### 16.4 New posts banner
+
+- `newWallPosts: 0` added to `appState()`
+- Banner sits above `#chat-messages`, visible when `activeTab === 'wall' && newWallPosts > 0`
+- Clicking reloads public wall and resets counter
+- `share_created` SSE handler increments counter; skips own posts via `window._currentUserId`
+- `submitShare` success: reloads both walls directly and resets counter (own posts never trigger banner)
+
+#### 16.5 Nested replies UI
+
+Each top-level comment shows a **Reply** button. Clicking sets `replyingTo = c.id` which reveals an inline reply form. Replies render indented (`pl-8`) under their parent using a nested `x-for` with filter `r.parent_comment_id === c.id`. `wallPostComment(shareId, content, component, parentCommentId?)` sends `parent_comment_id` in the request body when replying.
+
+#### 16.6 `_getAppData` public API fix
+
+Updated to use `Alpine.$data(el)` instead of `_x_dataStack[0]`.
+
+### E2E Tests
+
+```js
+// e2e/wall.spec.ts additions
+test('new post from another user shows banner without auto-scroll')
+test('clicking banner reloads wall and dismisses banner')
+test('own share does not trigger banner — appears immediately')
+test('reply button shows inline form under comment')
+test('reply is rendered indented under parent comment')
+test('reply SSE event places reply under correct parent')
+test('profile shows at most 3 recent shares')
+```
+
+---
+
 ## CI Workflow Summary
 
 Every PR triggers `.github/workflows/ci.yml`:

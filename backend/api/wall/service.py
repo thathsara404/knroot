@@ -128,6 +128,13 @@ def create_share(
         """,
         (user_id, session_id, visibility, description or None, source_share_id),
     )
+    author = query_one("SELECT full_name, username FROM users WHERE id = %s", (user_id,)) or {}
+    broadcast_event("share_created", {
+        "share_id": str(row["id"]),
+        "user_id": str(user_id),
+        "author_name": author.get("full_name") or "",
+        "author_username": author.get("username") or "",
+    })
     return _serialize_share(row)
 
 
@@ -448,16 +455,19 @@ def cast_vote(voter_user_id: str, share_id: str, vote: int) -> dict[str, Any]:
     upvotes = int(tally.get("upvotes") or 0)
     downvotes = int(tally.get("downvotes") or 0)
 
+    my_vote_val = vote if vote in (1, -1) else 0
     broadcast_event("vote_updated", {
         "share_id": str(share_id),
         "upvotes": upvotes,
         "downvotes": downvotes,
+        "voter_user_id": str(voter_user_id),
+        "my_vote": my_vote_val,
     })
 
     return {
         "upvotes": upvotes,
         "downvotes": downvotes,
-        "my_vote": vote if vote in (1, -1) else 0,
+        "my_vote": my_vote_val,
         "author_score": author_score["score"],
         "author_stars": author_score["stars"],
     }
@@ -475,23 +485,36 @@ def _serialize_comment(row: dict) -> dict[str, Any]:
         "author_name": row.get("author_name") or row.get("full_name") or "Unknown",
         "content": row["content"],
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "parent_comment_id": str(row["parent_comment_id"]) if row.get("parent_comment_id") else None,
     }
 
 
-def add_comment(user_id: str, share_id: str, content: str) -> dict[str, Any]:
-    """Insert comment. Returns the created comment dict."""
+def add_comment(
+    user_id: str,
+    share_id: str,
+    content: str,
+    parent_comment_id: str | None = None,
+) -> dict[str, Any]:
+    """Insert comment or reply. Returns the created comment dict."""
     if not content or not content.strip():
         raise ValueError("content required")
     share = query_one("SELECT 1 FROM shares WHERE id = %s", (share_id,))
     if not share:
         raise ValueError("Share not found")
+    if parent_comment_id:
+        parent = query_one(
+            "SELECT share_id FROM share_comments WHERE id = %s",
+            (parent_comment_id,),
+        )
+        if not parent or str(parent["share_id"]) != str(share_id):
+            raise ValueError("Invalid parent comment")
     row = execute_returning(
         """
-        INSERT INTO share_comments (share_id, user_id, content)
-        VALUES (%s, %s, %s)
-        RETURNING id, share_id, user_id, content, created_at
+        INSERT INTO share_comments (share_id, user_id, content, parent_comment_id)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id, share_id, user_id, content, created_at, parent_comment_id
         """,
-        (share_id, user_id, content.strip()),
+        (share_id, user_id, content.strip(), parent_comment_id),
     )
     author = query_one(
         "SELECT full_name FROM users WHERE id = %s",
@@ -513,7 +536,7 @@ def list_comments(share_id: str) -> list[dict[str, Any]]:
     rows = query(
         """
         SELECT c.id, c.share_id, c.user_id, c.content, c.created_at,
-               u.full_name AS author_name
+               c.parent_comment_id, u.full_name AS author_name
         FROM share_comments c
         JOIN users u ON u.id = c.user_id
         WHERE c.share_id = %s
@@ -526,7 +549,7 @@ def list_comments(share_id: str) -> list[dict[str, Any]]:
 
 def delete_comment(user_id: str, comment_id: str) -> None:
     row = query_one(
-        "SELECT user_id FROM share_comments WHERE id = %s",
+        "SELECT user_id, share_id FROM share_comments WHERE id = %s",
         (comment_id,),
     )
     if not row:
@@ -534,6 +557,11 @@ def delete_comment(user_id: str, comment_id: str) -> None:
     if str(row["user_id"]) != str(user_id):
         raise ValueError("Not authorised to delete this comment")
     execute("DELETE FROM share_comments WHERE id = %s", (comment_id,))
+    # ON DELETE CASCADE removes replies; broadcast so all clients update live
+    broadcast_event("comment_deleted", {
+        "share_id": str(row["share_id"]),
+        "comment_id": str(comment_id),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -732,7 +760,7 @@ def get_profile(user_id: str, viewer_id: str) -> dict[str, Any]:
         JOIN chat_sessions cs ON cs.id = s.session_id
         WHERE s.user_id = %s
         ORDER BY s.created_at DESC
-        LIMIT 5
+        LIMIT 3
         """,
         (user_id,),
     )

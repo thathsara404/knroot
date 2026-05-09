@@ -2345,8 +2345,10 @@ data: <json_payload>
 
 | `event` type              | Payload fields | Who publishes |
 |---------------------------|----------------|---------------|
-| `comment_added`           | `share_id`, `comment` (full comment object) | `add_comment()` — fans out to all online users (public wall is open to all) |
-| `vote_updated`            | `share_id`, `upvotes`, `downvotes` | `cast_vote()` — fans out to all online users; counts are server-authoritative so client overwrites directly |
+| `comment_added`           | `share_id`, `comment` (full object incl. `parent_comment_id`) | `add_comment()` — fans out to all online users |
+| `comment_deleted`         | `share_id`, `comment_id` | `delete_comment()` — fans out; client removes comment + its replies and decrements count |
+| `vote_updated`            | `share_id`, `upvotes`, `downvotes`, `voter_user_id`, `my_vote` | `cast_vote()` — fans out; client syncs `myVote` only for the voter's own cards |
+| `share_created`           | `share_id`, `user_id`, `author_name`, `author_username` | `create_share()` — fans out to all online users; own posts excluded from notification banner client-side |
 | `follow_request_received` | `requester` (`{id, full_name, username}`) | `follow_user()` — targets the followed user |
 | `follow_accepted`         | `accepted_by` (`{id, full_name, username}`) | `accept_follow_request()` — targets the requester |
 
@@ -2504,3 +2506,70 @@ No changes to `docker-compose.yml` are needed — the existing `web` service alr
 ### 29.11 `x-accel-buffering` Header
 
 Nginx (and most reverse proxies) buffer upstream responses by default, which breaks SSE. The `X-Accel-Buffering: no` response header disables this. The endpoint always sends this header.
+
+---
+
+## 30. Live New-Post Notification (share_created)
+
+### 30.1 Pattern
+
+When a user publishes a new share, `create_share()` broadcasts a `share_created` SSE event to all online users. The browser does **not** auto-inject the new card (which would cause scroll-jump) — instead it shows a "N new posts — click to refresh" banner at the top of the public wall, matching the Facebook/Twitter UX pattern.
+
+### 30.2 Own-Post Exclusion
+
+`window._currentUserId` is set at page-load from the Jinja `user_id` context variable:
+
+```html
+<script>window._currentUserId = "{{ user_id }}";</script>
+```
+
+The `share_created` SSE handler skips incrementing the banner counter if `data.user_id === window._currentUserId`. Instead, `submitShare()` reloads both walls directly on success, so the poster sees their new post immediately without the banner.
+
+### 30.3 Banner Reset
+
+- Switching to the wall tab resets `newWallPosts = 0` (re-loads the wall fresh).
+- Clicking the banner resets `newWallPosts = 0` and reloads the public wall partial.
+
+---
+
+## 31. Nested Comments (Replies)
+
+### 31.1 Design
+
+Two levels only (no infinite nesting) — the standard for social platforms at this scale. Top-level comments appear directly on the post. Replies appear indented under their parent comment.
+
+### 31.2 Schema
+
+```sql
+ALTER TABLE share_comments
+    ADD COLUMN IF NOT EXISTS parent_comment_id UUID
+        REFERENCES share_comments(id) ON DELETE CASCADE;
+```
+
+`parent_comment_id` is `NULL` for top-level comments, set to the parent's `id` for replies.
+
+### 31.3 Service
+
+`add_comment(user_id, share_id, content, parent_comment_id=None)` — validates that the parent belongs to the same share before inserting. `list_comments` returns a flat list ordered by `created_at ASC`; the client groups into parent/reply buckets.
+
+### 31.4 Client Rendering
+
+`comments` in Alpine state is a flat array. The template uses filter expressions in `x-for` to group:
+
+```html
+<!-- Top-level -->
+<template x-for="c in comments.filter(c => !c.parent_comment_id)" :key="c.id">
+  ...
+  <!-- Replies under this comment -->
+  <template x-for="r in comments.filter(r => r.parent_comment_id === c.id)" :key="r.id">
+    ...
+  </template>
+  <!-- Inline reply form -->
+</template>
+```
+
+`replyingTo` (comment ID or `null`) controls which inline reply form is visible. `wallPostComment(shareId, content, component, parentCommentId?)` sends `parent_comment_id` in the request body when replying.
+
+### 31.5 SSE
+
+The existing `comment_added` event payload includes `parent_comment_id`. `wallHandleNewComment` pushes the comment into the flat `comments` array regardless of level — the template filter places it correctly.

@@ -87,13 +87,9 @@ document.addEventListener('DOMContentLoaded', function () {
 // =============================================================================
 
 function _getAppData() {
-  const el = document.querySelector('[x-data="appState()"]');
+  var el = document.querySelector('[x-data="appState()"]');
   if (!el) return null;
-  // Alpine v3 stores reactive data on _x_dataStack (array, top-most first)
-  if (el._x_dataStack && el._x_dataStack.length) {
-    return el._x_dataStack[0];
-  }
-  return null;
+  return window.Alpine ? window.Alpine.$data(el) : null;
 }
 
 function _setContentBusy(val) {
@@ -221,12 +217,14 @@ function appState() {
     isPanelDragging: false,
     activeTab: 'root',
     pendingFollowCount: 0,
+    newWallPosts: 0,
     shareModal: { open: false, sessionId: null, visibility: 'public', description: '', loading: false },
 
     switchTab(tab) {
       this.activeTab = tab;
       // Open / close the SSE stream alongside the tab — only the wall needs live events.
       if (tab === 'wall') {
+        this.newWallPosts = 0;
         window.wallInitSSE && window.wallInitSSE();
       } else {
         window.wallDestroySSE && window.wallDestroySSE();
@@ -277,6 +275,12 @@ function appState() {
           this.shareModal.open = false;
           this.shareModal.description = '';
           Toast.success('Shared to your wall!');
+          // Reload both walls so own post appears immediately without banner
+          if (this.activeTab === 'wall') {
+            this.newWallPosts = 0;
+            htmx.ajax('GET', '/wall/public/partial', { target: '#chat-messages', swap: 'innerHTML' });
+            htmx.ajax('GET', '/wall/private/partial', { target: '#right-panel', swap: 'innerHTML' });
+          }
         })
         .catch((err) => Toast.error(typeof err === 'string' ? err : 'Could not share'))
         .finally(() => { this.shareModal.loading = false; });
@@ -795,19 +799,27 @@ window.wallLoadComments = function (shareId, component) {
     .catch(function () {});
 };
 
-window.wallPostComment = function (shareId, content, component) {
+window.wallPostComment = function (shareId, content, component, parentCommentId) {
   if (!content || !content.trim()) return;
   component.submitting = true;
+  var body = { content: content };
+  if (parentCommentId) body.parent_comment_id = parentCommentId;
   fetch('/wall/shares/' + shareId + '/comments', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content: content }),
+    body: JSON.stringify(body),
   })
     .then(function (r) { if (!r.ok) throw new Error('Comment failed'); return r.json(); })
     .then(function (comment) {
-      component.comments.push(comment);
-      component.commentCount = (component.commentCount || 0) + 1;
+      // SSE may have already pushed this comment (arrived before HTTP response)
+      var alreadyPushed = component.comments.some(function (c) { return c.id === comment.id; });
+      if (!alreadyPushed) {
+        component.comments.push(comment);
+        component.commentCount = (component.commentCount || 0) + 1;
+      }
       component.commentText = '';
+      component.replyingTo = null;
+      component.replyText = '';
     })
     .catch(function () { Toast.error('Could not post comment'); })
     .finally(function () { component.submitting = false; });
@@ -817,7 +829,15 @@ window.wallDeleteComment = function (commentId, component) {
   fetch('/wall/comments/' + commentId, { method: 'DELETE' })
     .then(function (r) { if (!r.ok) throw new Error('Delete failed'); })
     .then(function () {
-      component.comments = component.comments.filter(function (c) { return c.id !== commentId; });
+      // Remove the comment and any replies to it; decrement count accordingly.
+      // SSE comment_deleted will sync other visible cards on this page.
+      var removed = component.comments.filter(function (c) {
+        return c.id === commentId || c.parent_comment_id === commentId;
+      }).length;
+      component.comments = component.comments.filter(function (c) {
+        return c.id !== commentId && c.parent_comment_id !== commentId;
+      });
+      component.commentCount = Math.max(0, (component.commentCount || 0) - removed);
     })
     .catch(function () { Toast.error('Could not delete comment'); });
 };
@@ -979,6 +999,19 @@ window.wallInitSSE = function () {
     window.wallHandleVoteUpdated && window.wallHandleVoteUpdated(data);
   });
 
+  es.addEventListener('share_created', function (e) {
+    var data = JSON.parse(e.data);
+    // Don't notify for own shares — submitShare already reloads the wall
+    if (window._currentUserId && data.user_id === window._currentUserId) return;
+    var appData = window._getAppData && window._getAppData();
+    if (appData) appData.newWallPosts = (appData.newWallPosts || 0) + 1;
+  });
+
+  es.addEventListener('comment_deleted', function (e) {
+    var data = JSON.parse(e.data);
+    window.wallHandleCommentDeleted && window.wallHandleCommentDeleted(data);
+  });
+
   es.onerror = function () { es.close(); window._wallSSE = null; };
   window._wallSSE = es;
 };
@@ -1014,5 +1047,25 @@ window.wallHandleVoteUpdated = function (data) {
     if (!component) return;
     component.upvotes = data.upvotes;
     component.downvotes = data.downvotes;
+    // Sync the voter's own vote state across all their visible cards for this share
+    if (window._currentUserId && data.voter_user_id === window._currentUserId) {
+      component.myVote = data.my_vote;
+    }
+  });
+};
+
+window.wallHandleCommentDeleted = function (data) {
+  document.querySelectorAll('[data-share-id="' + data.share_id + '"]').forEach(function (card) {
+    var component = window.Alpine && window.Alpine.$data(card);
+    if (!component) return;
+    // Count how many entries will be removed (comment + its replies, cascaded by DB)
+    var removed = component.comments.filter(function (c) {
+      return c.id === data.comment_id || c.parent_comment_id === data.comment_id;
+    }).length;
+    if (removed === 0) return;
+    component.comments = component.comments.filter(function (c) {
+      return c.id !== data.comment_id && c.parent_comment_id !== data.comment_id;
+    });
+    component.commentCount = Math.max(0, (component.commentCount || 0) - removed);
   });
 };

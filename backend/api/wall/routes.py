@@ -132,8 +132,9 @@ def add_comment(share_id: str):
     content = (data.get("content") or "").strip()
     if not content:
         return jsonify({"error": "content required"}), 400
+    parent_comment_id = (data.get("parent_comment_id") or "").strip() or None
     try:
-        comment = wall_svc.add_comment(g.user_id, share_id, content)
+        comment = wall_svc.add_comment(g.user_id, share_id, content, parent_comment_id)
         return jsonify(comment), 201
     except ValueError as e:
         return jsonify({"error": str(e)}), 404

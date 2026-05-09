@@ -34,6 +34,7 @@
 {% block main_class %}flex h-[calc(100vh-57px)] overflow-hidden{% endblock %}
 
 {% block content %}
+<script>window._currentUserId = "{{ user_id }}";</script>
 <div
   class="flex h-full w-full select-none"
   x-data="appState()"
@@ -156,6 +157,20 @@
 
   <!-- CENTRE PANE -->
   <main class="flex flex-col flex-1 min-w-0 bg-white overflow-hidden">
+
+    <!-- New posts notification banner — wall tab only -->
+    <div
+      x-show="activeTab === 'wall' && newWallPosts > 0"
+      x-cloak
+      @click="newWallPosts = 0; htmx.ajax('GET', '/wall/public/partial', {target: '#chat-messages', swap: 'innerHTML'})"
+      class="flex items-center justify-center gap-2 py-2 px-4 bg-indigo-600 text-white text-xs font-semibold cursor-pointer hover:bg-indigo-700 transition-colors flex-shrink-0"
+    >
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+      </svg>
+      <span x-text="newWallPosts + ' new post' + (newWallPosts === 1 ? '' : 's') + ' — click to refresh'"></span>
+    </div>
 
     <div id="chat-messages" class="flex-1 overflow-y-auto" :class="activeTab === 'root' ? 'px-4 py-4 space-y-4' : ''">
       <div id="chat-welcome"
