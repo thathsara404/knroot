@@ -225,6 +225,12 @@ function appState() {
 
     switchTab(tab) {
       this.activeTab = tab;
+      // Open / close the SSE stream alongside the tab — only the wall needs live events.
+      if (tab === 'wall') {
+        window.wallInitSSE && window.wallInitSSE();
+      } else {
+        window.wallDestroySSE && window.wallDestroySSE();
+      }
       if (tab === 'wall') {
         htmx.ajax('GET', '/wall/public/partial', { target: '#chat-messages', swap: 'innerHTML' });
         htmx.ajax('GET', '/wall/private/partial', { target: '#right-panel', swap: 'innerHTML' });
@@ -800,6 +806,7 @@ window.wallPostComment = function (shareId, content, component) {
     .then(function (r) { if (!r.ok) throw new Error('Comment failed'); return r.json(); })
     .then(function (comment) {
       component.comments.push(comment);
+      component.commentCount = (component.commentCount || 0) + 1;
       component.commentText = '';
     })
     .catch(function () { Toast.error('Could not post comment'); })
@@ -935,14 +942,77 @@ window.wallImport = function (shareId, component) {
     .then(function () {
       component.importDone = true;
       Toast.success('Imported! Find it in your Root section.');
-      // Refresh session list so the imported session appears in the sidebar
       var sl = document.getElementById('session-list');
       if (sl) htmx.trigger(sl, 'sessionListRefresh');
-      // Auto-unsave from private wall after successful import (already have it now)
-      fetch('/wall/shares/' + shareId + '/save', { method: 'DELETE' }).catch(function () {});
     })
     .catch(function (err) {
       Toast.error(err.message || 'Could not import');
     })
     .finally(function () { component.importLoading = false; });
+};
+
+// =============================================================================
+// SSE — real-time wall updates (comments, follow requests, follow accepts)
+// =============================================================================
+
+window.wallInitSSE = function () {
+  if (window._wallSSE) return;
+  var es = new EventSource('/events/stream');
+
+  es.addEventListener('comment_added', function (e) {
+    var data = JSON.parse(e.data);
+    window.wallHandleNewComment && window.wallHandleNewComment(data);
+  });
+
+  es.addEventListener('follow_request_received', function (e) {
+    var appData = window._getAppData && window._getAppData();
+    if (appData) appData.pendingFollowCount = (appData.pendingFollowCount || 0) + 1;
+  });
+
+  es.addEventListener('follow_accepted', function (e) {
+    var data = JSON.parse(e.data);
+    window.wallHandleFollowAccepted && window.wallHandleFollowAccepted(data.accepted_by.id);
+  });
+
+  es.addEventListener('vote_updated', function (e) {
+    var data = JSON.parse(e.data);
+    window.wallHandleVoteUpdated && window.wallHandleVoteUpdated(data);
+  });
+
+  es.onerror = function () { es.close(); window._wallSSE = null; };
+  window._wallSSE = es;
+};
+
+window.wallDestroySSE = function () {
+  if (window._wallSSE) { window._wallSSE.close(); window._wallSSE = null; }
+};
+
+window.wallHandleNewComment = function (data) {
+  document.querySelectorAll('[data-share-id="' + data.share_id + '"]').forEach(function (card) {
+    var component = window.Alpine && window.Alpine.$data(card);
+    if (!component) return;
+    var alreadyPresent = component.comments.some(function (c) { return c.id === data.comment.id; });
+    if (alreadyPresent) return; // poster's own card: optimistic update already applied
+    // New comment from another user — update badge and visible list
+    component.commentCount = (component.commentCount || 0) + 1;
+    if (component.commentsOpen) {
+      component.comments.push(data.comment);
+    }
+  });
+};
+
+window.wallHandleFollowAccepted = function (userId) {
+  document.querySelectorAll('[data-author-id="' + userId + '"]').forEach(function (card) {
+    var component = window.Alpine && window.Alpine.$data(card);
+    if (component) component.followStatus = 'accepted';
+  });
+};
+
+window.wallHandleVoteUpdated = function (data) {
+  document.querySelectorAll('[data-share-id="' + data.share_id + '"]').forEach(function (card) {
+    var component = window.Alpine && window.Alpine.$data(card);
+    if (!component) return;
+    component.upvotes = data.upvotes;
+    component.downvotes = data.downvotes;
+  });
 };

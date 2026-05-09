@@ -4,6 +4,7 @@ import json as _json
 from typing import Any
 
 from backend.core.db import execute, execute_returning, query, query_one
+from backend.core.sse import broadcast_event, publish_event
 
 
 def _parse_message_content(content: str) -> dict[str, Any]:
@@ -17,6 +18,12 @@ def _parse_message_content(content: str) -> dict[str, Any]:
     if not content:
         return {"type": "text", "text": ""}
     stripped = content.strip()
+    # Strip markdown code fences (```json\n{...}\n``` or ```\n{...}\n```)
+    if stripped.startswith("```"):
+        try:
+            stripped = stripped.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        except Exception:
+            pass
     if stripped.startswith("{"):
         try:
             parsed = _json.loads(stripped)
@@ -438,9 +445,18 @@ def cast_vote(voter_user_id: str, share_id: str, vote: int) -> dict[str, Any]:
 
     author_score = get_user_score(str(share["user_id"]))
 
+    upvotes = int(tally.get("upvotes") or 0)
+    downvotes = int(tally.get("downvotes") or 0)
+
+    broadcast_event("vote_updated", {
+        "share_id": str(share_id),
+        "upvotes": upvotes,
+        "downvotes": downvotes,
+    })
+
     return {
-        "upvotes": int(tally.get("upvotes") or 0),
-        "downvotes": int(tally.get("downvotes") or 0),
+        "upvotes": upvotes,
+        "downvotes": downvotes,
         "my_vote": vote if vote in (1, -1) else 0,
         "author_score": author_score["score"],
         "author_stars": author_score["stars"],
@@ -482,7 +498,15 @@ def add_comment(user_id: str, share_id: str, content: str) -> dict[str, Any]:
         (user_id,),
     ) or {}
     row["author_name"] = author.get("full_name") or "You"
-    return _serialize_comment(row)
+    comment = _serialize_comment(row)
+
+    # Fan-out: notify every active SSE viewer that a new comment was posted.
+    # Fire-and-forget — Redis failures must never break the HTTP response.
+    broadcast_event(
+        "comment_added",
+        {"share_id": str(share_id), "comment": comment},
+    )
+    return comment
 
 
 def list_comments(share_id: str) -> list[dict[str, Any]]:
@@ -568,6 +592,25 @@ def follow_user(follower_id: str, followed_id: str) -> dict[str, str]:
         """,
         (follower_id, followed_id),
     )
+
+    # Notify the followed user that someone is requesting to follow them.
+    # Fire-and-forget — never break the HTTP response on Redis failure.
+    requester = query_one(
+        "SELECT id, full_name, username FROM users WHERE id = %s",
+        (follower_id,),
+    )
+    if requester:
+        publish_event(
+            user_id=str(followed_id),
+            event="follow_request_received",
+            payload={
+                "requester": {
+                    "id": str(requester["id"]),
+                    "full_name": requester.get("full_name"),
+                    "username": requester.get("username"),
+                }
+            },
+        )
     return {"status": "pending"}
 
 
@@ -593,6 +636,25 @@ def accept_follow_request(current_user_id: str, requester_id: str) -> None:
         "UPDATE user_follows SET status = 'accepted' WHERE follower_id = %s AND followed_id = %s",
         (requester_id, current_user_id),
     )
+
+    # Notify the original requester that their follow request was accepted.
+    # Fire-and-forget — never break the HTTP response on Redis failure.
+    accepter = query_one(
+        "SELECT id, full_name, username FROM users WHERE id = %s",
+        (current_user_id,),
+    )
+    if accepter:
+        publish_event(
+            user_id=str(requester_id),
+            event="follow_accepted",
+            payload={
+                "accepted_by": {
+                    "id": str(accepter["id"]),
+                    "full_name": accepter.get("full_name"),
+                    "username": accepter.get("username"),
+                }
+            },
+        )
 
 
 def reject_follow_request(current_user_id: str, requester_id: str) -> None:

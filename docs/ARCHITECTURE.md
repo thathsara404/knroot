@@ -1012,6 +1012,12 @@ Failure: server returns HTML error fragment → HTMX swaps into `#form-error`.
 | POST   | `/wall/follow-requests/<uid>/reject`          | Session | Reject / decline an incoming follow request (204)              |
 | GET    | `/wall/follow-requests/count`                 | Session | Number of pending incoming requests (JSON: `{count: N}`)       |
 
+### SSE (Real-time Events)
+
+| Method | Path             | Auth    | Description |
+|--------|------------------|---------|-------------|
+| GET    | `/events/stream` | Session | Long-lived SSE stream for the current user. Returns `text/event-stream`. |
+
 ---
 
 ## 11. Docker Compose
@@ -2283,3 +2289,218 @@ Each share card carries `follow_status` (set by `_hydrate_share_rows`). Alpine p
 | `'accepted'`         | **Following** (green, hover turns red) | `DELETE /wall/follow/<uid>` → set `followStatus = null` |
 
 Own cards show neither button (server sets `follow_status = 'self'`, filtered in template). All state transitions happen client-side after a `fetch()` — no HTMX reload needed for follow button UX.
+
+---
+
+## 29. Real-time Events (Server-Sent Events)
+
+### 29.1 Design Goal
+
+Deliver live updates — new comments, incoming follow requests, follow acceptances — to the browser without polling or page refresh. The pattern mirrors Facebook's architecture at a scale appropriate for this stack: a **per-user pub/sub channel in Redis** fanned out to a **persistent SSE connection** in the browser.
+
+### 29.2 Transport Choice: SSE
+
+| Option | Chosen? | Reason |
+|--------|---------|--------|
+| Polling (`setInterval` + fetch) | ✗ | Wastes bandwidth; acceptable only for very low-frequency events |
+| **Server-Sent Events (SSE)** | ✓ | One-directional server→client push; works natively with Flask; browser auto-reconnects; no extra infra beyond Redis (already in stack) |
+| WebSockets | ✗ | Bidirectional — unnecessary here; requires async server changes |
+
+### 29.3 Architecture
+
+```
+Browser (EventSource)
+        │  GET /events/stream (keep-alive, text/event-stream)
+        │
+  Flask SSE endpoint
+  (backend/api/events/routes.py)
+        │  Redis SUBSCRIBE user:<user_id>
+        │
+  Redis Pub/Sub
+        ▲
+  Publisher helpers
+  (backend/core/sse.py)
+        ▲
+  Called by existing wall routes on every write:
+    add_comment()           → publishes comment_added
+    follow_user()           → publishes follow_request_received
+    accept_follow_request() → publishes follow_accepted
+```
+
+### 29.4 Redis Channel Convention
+
+Each user has one dedicated channel: `sse:user:<user_id>`.
+
+All events for that user (regardless of type) are published to that single channel. The browser dispatches on `event.type` client-side.
+
+### 29.5 Event Envelope
+
+Every message published to Redis is a JSON string. The SSE endpoint forwards it as:
+
+```
+event: <event_type>
+data: <json_payload>
+
+```
+
+| `event` type              | Payload fields | Who publishes |
+|---------------------------|----------------|---------------|
+| `comment_added`           | `share_id`, `comment` (full comment object) | `add_comment()` — fans out to all online users (public wall is open to all) |
+| `vote_updated`            | `share_id`, `upvotes`, `downvotes` | `cast_vote()` — fans out to all online users; counts are server-authoritative so client overwrites directly |
+| `follow_request_received` | `requester` (`{id, full_name, username}`) | `follow_user()` — targets the followed user |
+| `follow_accepted`         | `accepted_by` (`{id, full_name, username}`) | `accept_follow_request()` — targets the requester |
+
+### 29.6 SSE Endpoint (`GET /events/stream`)
+
+The generator uses `get_message(timeout=KEEPALIVE_INTERVAL)` rather than the blocking `pubsub.listen()` iterator. This lets the loop wake up periodically even when no events arrive, so it can send a keepalive comment and renew the presence TTL:
+
+```python
+@bp.get("/events/stream")
+@require_auth
+def event_stream():
+    user_id = g.user_id
+
+    def generate():
+        register_user(user_id)
+        pubsub = get_redis().pubsub()
+        try:
+            pubsub.subscribe(f"sse:user:{user_id}")
+            while True:
+                message = pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=KEEPALIVE_INTERVAL,   # 20 s
+                )
+                if message and message.get("type") == "message":
+                    try:
+                        data = json.loads(message["data"])
+                        yield f"event: {data['event']}\ndata: {data['payload']}\n\n"
+                    except (ValueError, KeyError, TypeError) as exc:
+                        logger.warning("sse.stream invalid message: %s", exc)
+                else:
+                    # Idle tick — keep proxy alive and renew TTL
+                    yield ": keepalive\n\n"
+                    renew_user_ttl(user_id)
+        finally:
+            pubsub.unsubscribe()
+            pubsub.close()
+            unregister_user(user_id)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+```
+
+The SSE comment line `": keepalive\n\n"` is invisible to browser `EventSource` listeners but prevents proxies and load-balancers from closing an idle connection.
+
+### 29.7 Publisher Helper (`backend/core/sse.py`)
+
+Presence is tracked with per-user TTL keys (`sse:online:<user_id>`) rather than a Redis SET. A key is created on connect (`setex`), renewed every keepalive tick (`expire`), and deleted on clean disconnect. A crashed process simply lets its key expire within `PRESENCE_TTL` seconds — no stale entries accumulate.
+
+```python
+PRESENCE_TTL = 30          # seconds until a presence key expires
+KEEPALIVE_INTERVAL = 20.0  # seconds between idle ticks in the SSE generator
+
+def register_user(user_id: str) -> None:
+    get_redis().setex(f"sse:online:{user_id}", PRESENCE_TTL, "1")
+
+def renew_user_ttl(user_id: str) -> None:
+    get_redis().expire(f"sse:online:{user_id}", PRESENCE_TTL)
+
+def unregister_user(user_id: str) -> None:
+    get_redis().delete(f"sse:online:{user_id}")
+
+def publish_event(user_id: str, event: str, payload: dict) -> None:
+    """Publish an SSE event to a single user's channel. Fire-and-forget."""
+    get_redis().publish(
+        f"sse:user:{user_id}",
+        json.dumps({"event": event, "payload": json.dumps(payload)}),
+    )
+
+def broadcast_event(event: str, payload: dict) -> None:
+    """Publish to every user with an active presence key."""
+    redis = get_redis()
+    msg = json.dumps({"event": event, "payload": json.dumps(payload)})
+    for key in redis.scan_iter("sse:online:*"):
+        uid = (key.decode() if isinstance(key, bytes) else key).split(":", 2)[-1]
+        redis.publish(f"sse:user:{uid}", msg)
+```
+
+All Redis calls are wrapped in `try/except` — publish failures are logged and never raised to the caller.
+
+### 29.8 Client Integration (`app.js`)
+
+`wallInitSSE()` is called when the user switches to the Wall tab. It creates an `EventSource` and registers handlers:
+
+```js
+window.wallInitSSE = function () {
+  if (window._wallSSE) return;          // already connected
+  var es = new EventSource('/events/stream');
+
+  es.addEventListener('comment_added', function (e) {
+    var data = JSON.parse(e.data);
+    window.wallHandleNewComment && window.wallHandleNewComment(data);
+  });
+
+  es.addEventListener('follow_request_received', function (e) {
+    var appData = window._getAppData && window._getAppData();
+    if (appData) appData.pendingFollowCount += 1;
+  });
+
+  es.addEventListener('follow_accepted', function (e) {
+    var data = JSON.parse(e.data);
+    window.wallHandleFollowAccepted && window.wallHandleFollowAccepted(data.accepted_by.id);
+  });
+
+  es.onerror = function () { es.close(); window._wallSSE = null; };
+  window._wallSSE = es;
+};
+
+window.wallDestroySSE = function () {
+  if (window._wallSSE) { window._wallSSE.close(); window._wallSSE = null; }
+};
+```
+
+`switchTab('wall')` calls `wallInitSSE()`. `switchTab` away from wall calls `wallDestroySSE()`.
+
+**Accessing Alpine component state** — card components are reached via the public Alpine v3 API `Alpine.$data(element)`, never the internal `_x_dataStack[0]`:
+
+```js
+window.wallHandleNewComment = function (data) {
+  document.querySelectorAll('[data-share-id="' + data.share_id + '"]').forEach(function (card) {
+    var component = window.Alpine && window.Alpine.$data(card);
+    if (!component) return;
+    // Deduplicate: the poster already incremented optimistically
+    var alreadyPresent = component.comments.some(function (c) { return c.id === data.comment.id; });
+    if (alreadyPresent) return;
+    component.commentCount = (component.commentCount || 0) + 1;
+    if (component.commentsOpen) {
+      component.comments.push(data.comment);
+    }
+  });
+};
+```
+
+The `alreadyPresent` guard prevents double-counting when the SSE event arrives for the user who posted the comment (whose client already incremented the count optimistically).
+
+### 29.9 `comment_added` Fan-out Strategy
+
+The public wall shows posts from all users. When user A posts a comment, every viewer currently on the wall should see it. Options:
+
+| Strategy | Description | Chosen |
+|----------|-------------|--------|
+| **Broadcast to all online users** | `broadcast_event` publishes to every active SSE session | ✓ Simple; Redis pub/sub handles fan-out; active connections are limited |
+| Track "who is viewing which share" | Server-side session registry | ✗ Complex; stateful; not worth it at this scale |
+
+Implementation: `add_comment()` calls `broadcast_event("comment_added", ...)`, which scans for all `sse:online:*` TTL keys and publishes to each user's channel. Because the presence keys have a 30-second TTL (renewed every 20 s by the keepalive tick), only live connections receive events — stale entries from crashed processes expire automatically and are never included in the scan.
+
+### 29.10 Flask Threading Requirement
+
+Flask's built-in dev server must run with `threaded=True` (default in Flask ≥ 1.0) so each SSE connection holds its own thread. In production (gunicorn), use `--worker-class gevent` or `--threads N` to support concurrent streaming responses.
+
+No changes to `docker-compose.yml` are needed — the existing `web` service already starts with threading.
+
+### 29.11 `x-accel-buffering` Header
+
+Nginx (and most reverse proxies) buffer upstream responses by default, which breaks SSE. The `X-Accel-Buffering: no` response header disables this. The endpoint always sends this header.

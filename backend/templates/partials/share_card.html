@@ -26,26 +26,29 @@
 {% endmacro %}
 
 <div
-  x-data="{
+  data-share-id="{{ loop_share.id }}"
+  data-author-id="{{ loop_share.user_id }}"
+  x-data='{
     treeOpen: false,
     commentsOpen: false,
     comments: [],
-    commentText: '',
+    commentText: "",
     myVote: {{ loop_share.my_vote|int }},
     upvotes: {{ loop_share.upvotes|int }},
     downvotes: {{ loop_share.downvotes|int }},
     submitting: false,
     importDone: false,
     importLoading: false,
+    commentCount: {{ loop_share.comment_count|int }},
     followStatus: {{ loop_share.follow_status | tojson }},
     savedToWall: {{ loop_share.saved_to_wall | tojson }},
     toggleComments() {
       this.commentsOpen = !this.commentsOpen;
       if (this.commentsOpen && this.comments.length === 0) {
-        window.wallLoadComments('{{ loop_share.id }}', this);
+        window.wallLoadComments("{{ loop_share.id }}", this);
       }
     },
-  }"
+  }'
   class="bg-white rounded-xl border border-gray-200 shadow-sm px-4 py-4"
 >
   <!-- Author line -->
@@ -249,7 +252,7 @@
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
       </svg>
-      <span>Comments ({{ loop_share.comment_count }})</span>
+      <span x-text="'Comments (' + commentCount + ')'"></span>
       <svg class="w-3 h-3 transition-transform" :class="commentsOpen ? 'rotate-180' : ''"
            fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>

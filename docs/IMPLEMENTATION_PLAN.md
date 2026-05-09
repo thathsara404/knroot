@@ -1491,7 +1491,7 @@ Template receives `wall_context` (`'public'` | `'private'` | `'profile'`) to det
 
 **`window.wallImport(shareId, component)` in `app.js`:**
 - `POST /wall/shares/<id>/import` → deep-copies session tree → sets `component.importDone = true`, refreshes session list
-- On success: auto-calls `DELETE /wall/shares/<id>/save` to clean up the bookmark (already in Root)
+- On success: bookmark is kept — the saved post remains visible on My Wall even after import
 - Import button visibility is controlled via Alpine `:class="importDone ? 'hidden' : ''"` (not `x-show`) so it renders immediately on page load and is only hidden after a successful import
 
 **`window.wallFollowAction(userId, action, componentData)` in `app.js`:**
@@ -1578,6 +1578,179 @@ test('Profile tab shows notification badge when follow requests exist')
 test('accepting follow request removes it from pending list')
 test('declining follow request removes it from pending list')
 test('accepting follow request causes accepted user posts to appear in private feed')
+```
+
+---
+
+## Phase 15 — Real-time Events via SSE (`feature/auth`)
+
+### Goal
+
+Deliver live updates to the browser without polling or page refresh. Three event types: new comments, incoming follow requests, follow acceptances. Transport: Server-Sent Events over a per-user Redis pub/sub channel.
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `backend/api/events/__init__.py` | Blueprint package |
+| `backend/api/events/routes.py` | `GET /events/stream` SSE endpoint |
+| `backend/core/sse.py` | `publish_event`, `broadcast_event`, TTL-based presence helpers (`register_user`, `renew_user_ttl`, `unregister_user`) |
+
+### Modified Files
+
+| File | Change |
+|------|--------|
+| `backend/api/wall/service.py` | Call `publish_event` in `add_comment`, `follow_user`, `accept_follow_request` |
+| `backend/app.py` | Register `events` blueprint |
+| `backend/static/app.js` | `wallInitSSE`, `wallDestroySSE`, `wallHandleNewComment`, `wallHandleFollowAccepted` |
+| `backend/templates/app/index.html` | Call `wallInitSSE()` / `wallDestroySSE()` on tab switch |
+
+### Backend Tasks
+
+#### 15.1 `backend/core/sse.py`
+
+Presence uses per-user TTL keys (`sse:online:<user_id>`) instead of a persistent Redis SET. A crashed process leaves a key that auto-expires within `PRESENCE_TTL` seconds — no stale entries accumulate.
+
+```python
+PRESENCE_TTL = 30          # seconds until a presence key expires
+KEEPALIVE_INTERVAL = 20.0  # seconds between idle ticks in the SSE generator
+
+def register_user(user_id: str) -> None:
+    get_redis().setex(f"sse:online:{user_id}", PRESENCE_TTL, "1")
+
+def renew_user_ttl(user_id: str) -> None:
+    get_redis().expire(f"sse:online:{user_id}", PRESENCE_TTL)
+
+def unregister_user(user_id: str) -> None:
+    get_redis().delete(f"sse:online:{user_id}")
+
+def publish_event(user_id: str, event: str, payload: dict) -> None:
+    get_redis().publish(
+        f"sse:user:{user_id}",
+        json.dumps({"event": event, "payload": json.dumps(payload)}),
+    )
+
+def broadcast_event(event: str, payload: dict) -> None:
+    """Publish to every user with an active presence key (scan_iter, not smembers)."""
+    redis = get_redis()
+    msg = json.dumps({"event": event, "payload": json.dumps(payload)})
+    for key in redis.scan_iter("sse:online:*"):
+        uid = (key.decode() if isinstance(key, bytes) else key).split(":", 2)[-1]
+        redis.publish(f"sse:user:{uid}", msg)
+```
+
+All Redis calls are wrapped in `try/except` — failures are logged and never raised.
+
+#### 15.2 `backend/api/events/routes.py`
+
+Uses `get_message(timeout=KEEPALIVE_INTERVAL)` instead of the blocking `pubsub.listen()` iterator, so the loop wakes up every 20 s to send a keepalive comment and renew the presence TTL:
+
+```python
+@bp.get("/events/stream")
+@require_auth
+def event_stream():
+    user_id = g.user_id
+
+    def generate():
+        register_user(user_id)
+        pubsub = get_redis().pubsub()
+        try:
+            pubsub.subscribe(f"sse:user:{user_id}")
+            while True:
+                message = pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=KEEPALIVE_INTERVAL,
+                )
+                if message and message.get("type") == "message":
+                    data = json.loads(message["data"])
+                    yield f"event: {data['event']}\ndata: {data['payload']}\n\n"
+                else:
+                    yield ": keepalive\n\n"   # SSE comment — invisible to EventSource
+                    renew_user_ttl(user_id)
+        finally:
+            pubsub.unsubscribe()
+            pubsub.close()
+            unregister_user(user_id)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+```
+
+#### 15.3 Wall service publishers
+
+Three hooks in `backend/api/wall/service.py`:
+
+| Function | Event | Target |
+|----------|-------|--------|
+| `add_comment()` | `comment_added` + full comment object | `broadcast_event` (all active users) |
+| `follow_user()` | `follow_request_received` + requester profile | `publish_event` to followed user |
+| `accept_follow_request()` | `follow_accepted` + accepter profile | `publish_event` to requester |
+
+#### 15.4 Blueprint registration (`app.py`)
+
+```python
+from backend.api.events.routes import bp as events_bp
+app.register_blueprint(events_bp)
+```
+
+### Frontend Tasks
+
+#### 15.5 `wallInitSSE` / `wallDestroySSE` (app.js)
+
+- Create `EventSource('/events/stream')` on wall tab open; store as `window._wallSSE`
+- `onerror`: close and null the reference (browser will not auto-retry after explicit close)
+- `wallDestroySSE`: called when leaving wall tab — closes the connection cleanly
+
+#### 15.6 Event handlers (app.js)
+
+| Event | Handler | Effect |
+|-------|---------|--------|
+| `comment_added` | `wallHandleNewComment(data)` | Find all cards for `data.share_id`; use `Alpine.$data(card)` to reach Alpine state; deduplicate by `comment.id` before incrementing `commentCount` (prevents double-count for the poster who already incremented optimistically); push to `comments` only if panel is open |
+| `vote_updated` | `wallHandleVoteUpdated(data)` | Find all cards for `data.share_id`; overwrite `component.upvotes` and `component.downvotes` with server-authoritative values; no dedup needed — overwriting is idempotent |
+| `follow_request_received` | inline | `appData.pendingFollowCount += 1` |
+| `follow_accepted` | `wallHandleFollowAccepted(userId)` | Find all share cards for that `userId` (via `data-author-id` attr); set `Alpine.$data(card).followStatus = 'accepted'` |
+
+Alpine component state is accessed via the public v3 API `Alpine.$data(element)`, not the internal `_x_dataStack[0]`.
+
+#### 15.7 `data-` attributes on share card
+
+Add two `data-*` attributes to the share card `<div>` to enable DOM lookup:
+- `data-share-id="{{ loop_share.id }}"`
+- `data-author-id="{{ loop_share.user_id }}"`
+
+#### 15.8 Tab switch wiring (`index.html` / `app.js`)
+
+In `switchTab()`:
+```js
+if (tab === 'wall') {
+    window.wallInitSSE && window.wallInitSSE();
+} else {
+    window.wallDestroySSE && window.wallDestroySSE();
+}
+```
+
+### Unit Tests (Backend)
+
+```python
+# tests/unit/test_sse.py
+def test_publish_event_sends_to_redis_channel(): ...
+def test_broadcast_event_sends_to_all_active_users(): ...
+def test_register_unregister_user(): ...
+def test_add_comment_triggers_broadcast(): ...
+def test_follow_user_publishes_to_followed_user(): ...
+def test_accept_follow_request_publishes_to_requester(): ...
+```
+
+### E2E Tests
+
+```js
+// e2e/sse.spec.ts
+test('comment posted by user A appears live on user B wall without refresh')
+test('follow request badge increments live when user A follows user B')
+test('follow accepted updates button state live for the requester')
 ```
 
 ---
