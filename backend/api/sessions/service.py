@@ -33,7 +33,8 @@ SESSION_COLS = """
 def _row_to_dict(row: dict) -> dict:
     """Convert a DB row to a JSON-serialisable dict."""
     d = dict(row)
-    for k in ('id', 'user_id', 'parent_session_id', 'root_session_id', 'linked_attempt_id'):
+    for k in ('id', 'user_id', 'parent_session_id', 'root_session_id',
+              'linked_attempt_id', 'imported_from_share_id'):
         if d.get(k) is not None:
             d[k] = str(d[k])
     for k in ('created_at', 'last_message_at'):
@@ -95,6 +96,7 @@ def list_sessions(user_id: str) -> list[dict]:
         """SELECT s.id, s.user_id, s.thread_id, s.title, s.session_type,
                   s.parent_session_id, s.root_session_id, s.depth_level,
                   s.topic, s.news_article_id, s.linked_attempt_id,
+                  s.imported_from_share_id,
                   s.created_at, s.last_message_at,
                   (SELECT COUNT(*) FROM chat_sessions c
                    WHERE c.parent_session_id = s.id)::int AS child_count

@@ -106,18 +106,20 @@ ai-agent/
 │   │   │   └── service.py              ← send_message(), auto_title(), extract_suggested_topics()
 │   │   ├── news/
 │   │   │   ├── routes.py
-│   │   │   ├── service.py              ← get_news(category) / get_topic_news(topic) — orchestrates cache + RSS
+│   │   │   ├── service.py              ← get_news(category) / get_topic_news(topic) — orchestrates cache + RSS; _infer_category() fallback
 │   │   │   ├── cache.py                ← Redis day/hour cache; fetch_topic_news() embedding pipeline; refresh_article_embeddings()
 │   │   │   ├── embeddings.py           ← all-MiniLM-L6-v2 loader; embed_articles(); weighted_scores(); adaptive_threshold(); mmr_rerank()
-│   │   │   ├── service.py              ← get_news(category) / get_topic_news(topic) — orchestrates cache + RSS; _infer_category() fallback
 │   │   │   └── feeds.py                ← NEWS_FEEDS dict keyed by 'ai' | 'programming' | 'political' | 'biology' | 'economy' | 'health'
 │   │   ├── discuss/
 │   │   │   ├── routes.py
 │   │   │   └── service.py              ← news_discuss(), create_learn_more_session(), get_tree()
-│   │   └── quiz/
-│   │       ├── routes.py
-│   │       ├── service.py              ← attempt lifecycle: generate, save, submit, retry, relearn
-│   │       └── generator.py            ← LLM MCQ prompt + validation; relearn prompt + cache
+│   │   ├── quiz/
+│   │   │   ├── routes.py
+│   │   │   ├── service.py              ← attempt lifecycle: generate, save, submit, retry, relearn
+│   │   │   └── generator.py            ← LLM MCQ prompt + validation; _shuffle_options() post-generation randomiser; relearn prompt + cache
+│   │   └── wall/
+│   │       ├── routes.py               ← Blueprint('/wall'): shares CRUD, votes, comments, follow, profile, preview, import
+│   │       └── service.py              ← create/delete share, cast_vote, add/list/delete comment, follow, get_profile, get_share_preview, import_share
 │   │
 │   ├── agent/
 │   │   ├── graph.py                    ← LangGraph StateGraph definition + compile_graph() helper
@@ -139,7 +141,12 @@ ai-agent/
 │       ├── 005_session_messages.sql
 │       ├── 006_cascade_fk.sql
 │       ├── 007_quiz_session.sql        ← adds linked_attempt_id to chat_sessions
-│       └── 008_source_category.sql     ← adds source_category to chat_sessions (news-tab origin for topic-news fallback)
+│       ├── 008_source_category.sql     ← adds source_category to chat_sessions (news-tab origin for topic-news fallback)
+│       ├── 009_social.sql              ← shares, share_votes, share_comments, user_follows tables
+│       ├── 010_import.sql              ← chat_sessions.imported_from_share_id + shares.source_share_id
+│       ├── 011_follow_requests.sql     ← adds status + requested_at to user_follows; partial index on pending
+│       ├── 012_cascade_reshare.sql     ← changes source_share_id FK to ON DELETE CASCADE (cascade-delete re-shares)
+│       └── 013_wall_saves.sql          ← wall_saves: user bookmarks a public share to their private wall
 │
 ├── backend/templates/                  ← Jinja2 HTML templates (served by Flask directly)
 │   ├── base.html                       ← HTML shell: head with CDN links, nav, flash messages
@@ -147,13 +154,13 @@ ai-agent/
 │   │   ├── login.html
 │   │   └── register.html
 │   ├── app/
-│   │   └── index.html                  ← 3-pane layout (sidebar + chat + news)
+│   │   └── index.html                  ← 3-pane layout (sidebar + chat + news) with bottom nav (Root/Wall/Profile)
 │   ├── learn/
 │   │   └── session.html                ← Learning tab (sidebar + chat + knowledge tree)
 │   ├── quiz/
 │   │   └── attempt.html
 │   └── partials/                       ← HTMX partial responses (HTML fragments)
-│       ├── session_list.html           ← Sidebar session tree with hierarchy + green-dot indicator
+│       ├── session_list.html           ← Sidebar session tree with hierarchy + green-dot indicator + share button + ↗ badge
 │       ├── message.html                ← Single chat message bubble
 │       ├── messages.html               ← Full message history list (session replay)
 │       ├── sectioned_message.html      ← Sectioned AI response (Explore / Learn More)
@@ -163,7 +170,14 @@ ai-agent/
 │       ├── knowledge_tree_panel.html   ← Right-pane knowledge tree wrapper
 │       ├── quiz_section.html           ← Per-section inline quiz cards
 │       ├── quiz_inline.html            ← Full inline quiz loaded into #chat-messages
-│       └── fact_check_report.html      ← Gemini fact-check verdict card
+│       ├── fact_check_report.html      ← Gemini fact-check verdict card
+│       ├── wall_public.html            ← Public wall card list (HTMX partial)
+│       ├── wall_private.html           ← Private/friends feed card list (HTMX partial)
+│       ├── share_card.html             ← Single share card: author, votes, comments, preview, import
+│       ├── profile_main.html           ← Profile centre pane: avatar, stats, recent shares
+│       ├── profile_score.html          ← Profile right pane: star rating, vote breakdown, scoring rules
+│       ├── share_preview_modal.html    ← Full-screen preview overlay: session tree + content panel
+│       └── share_session_preview.html  ← Preview content: chat bubbles or ephemeral MCQ (previewQuizState)
 │
 ├── backend/static/                     ← Served at /static/ — minimal custom JS only
 │   ├── app.js                          ← Alpine appState() + all HTMX event wiring
@@ -224,21 +238,22 @@ CREATE TABLE users (
 ### 4.2 `chat_sessions`
 ```sql
 CREATE TABLE chat_sessions (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id           UUID REFERENCES users(id) ON DELETE CASCADE,
-    thread_id         VARCHAR(255) UNIQUE NOT NULL DEFAULT gen_random_uuid()::text,
-    title             VARCHAR(255),                   -- NULL = auto-generate from content
-    session_type      VARCHAR(20) NOT NULL DEFAULT 'regular',
-    parent_session_id UUID REFERENCES chat_sessions(id),
-    root_session_id   UUID REFERENCES chat_sessions(id),
-    depth_level       INTEGER NOT NULL DEFAULT 0,
-    topic             VARCHAR(500),
-    news_article_id   VARCHAR(20),
-    linked_attempt_id UUID,                          -- points to mcq_attempts row for quiz sessions
-    source_category   VARCHAR(20),                   -- news tab origin ('health','economy',…) for topic-news fallback
-    created_at        TIMESTAMPTZ DEFAULT NOW(),
-    updated_at        TIMESTAMPTZ DEFAULT NOW(),
-    last_message_at   TIMESTAMPTZ DEFAULT NOW()
+    id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id                UUID REFERENCES users(id) ON DELETE CASCADE,
+    thread_id              VARCHAR(255) UNIQUE NOT NULL DEFAULT gen_random_uuid()::text,
+    title                  VARCHAR(255),                   -- NULL = auto-generate from content
+    session_type           VARCHAR(20) NOT NULL DEFAULT 'regular',
+    parent_session_id      UUID REFERENCES chat_sessions(id),
+    root_session_id        UUID REFERENCES chat_sessions(id),
+    depth_level            INTEGER NOT NULL DEFAULT 0,
+    topic                  VARCHAR(500),
+    news_article_id        VARCHAR(20),
+    linked_attempt_id      UUID,                          -- points to mcq_attempts row for quiz sessions
+    source_category        VARCHAR(20),                   -- news tab origin ('health','economy',…) for topic-news fallback
+    imported_from_share_id UUID REFERENCES shares(id) ON DELETE SET NULL,  -- set when session is a deep-copy import
+    created_at             TIMESTAMPTZ DEFAULT NOW(),
+    updated_at             TIMESTAMPTZ DEFAULT NOW(),
+    last_message_at        TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user_last ON chat_sessions(user_id, last_message_at DESC);
@@ -264,7 +279,75 @@ CREATE TABLE mcq_attempts (
 CREATE INDEX idx_mcq_session ON mcq_attempts(session_id);
 ```
 
-### 4.4 `news_cache` (DB fallback for Redis)
+### 4.4 `shares`, `share_votes`, `share_comments`, `user_follows`
+
+```sql
+-- Migration 009_social.sql
+CREATE TABLE shares (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID REFERENCES users(id) ON DELETE CASCADE,
+    session_id      UUID REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    visibility      VARCHAR(10) NOT NULL DEFAULT 'public',  -- 'public' | 'friends'
+    description     TEXT,
+    source_share_id UUID REFERENCES shares(id) ON DELETE SET NULL,  -- attribution: original share when re-sharing an import
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE share_votes (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    share_id   UUID REFERENCES shares(id) ON DELETE CASCADE,
+    user_id    UUID REFERENCES users(id) ON DELETE CASCADE,
+    vote       SMALLINT NOT NULL CHECK (vote IN (1, -1)),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(share_id, user_id)
+);
+
+CREATE TABLE share_comments (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    share_id   UUID REFERENCES shares(id) ON DELETE CASCADE,
+    user_id    UUID REFERENCES users(id) ON DELETE CASCADE,
+    body       TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE user_follows (
+    follower_id  UUID REFERENCES users(id) ON DELETE CASCADE,
+    followed_id  UUID REFERENCES users(id) ON DELETE CASCADE,
+    status       VARCHAR(10)  NOT NULL DEFAULT 'accepted',  -- 'pending' | 'accepted'
+    requested_at TIMESTAMPTZ           DEFAULT NOW(),
+    created_at   TIMESTAMPTZ           DEFAULT NOW(),
+    PRIMARY KEY (follower_id, followed_id)
+);
+
+-- Migration 011_follow_requests.sql (additive, idempotent)
+-- ALTER TABLE user_follows
+--     ADD COLUMN IF NOT EXISTS status       VARCHAR(10)  NOT NULL DEFAULT 'accepted',
+--     ADD COLUMN IF NOT EXISTS requested_at TIMESTAMPTZ           DEFAULT NOW();
+CREATE INDEX IF NOT EXISTS idx_follows_pending
+    ON user_follows(followed_id, status)
+    WHERE status = 'pending';
+```
+
+**Scoring algorithm** (`service.py::score_to_stars`):
+- Each upvote (+1 vote) → **+10 pts**; each downvote (−1 vote) → **−5 pts**
+- `score = upvotes × 10 + downvotes × (−5)` (downvotes are stored as `vote = -1`)
+- Star thresholds: 50 pts → 1★, 150 pts → 2★, 350 pts → 3★, 600 pts → 4★, 900 pts → 5★
+
+### 4.5 `wall_saves`
+```sql
+-- Migration 013_wall_saves.sql
+CREATE TABLE wall_saves (
+    user_id  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    share_id UUID NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
+    saved_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, share_id)
+);
+CREATE INDEX IF NOT EXISTS idx_wall_saves_user ON wall_saves(user_id, saved_at DESC);
+```
+
+A lightweight bookmark: the viewer clicks "Save to my wall" on a public wall post → a `wall_saves` row is inserted. The saved post then appears in their private wall (My Wall) alongside their own shares. Deleting the original share (via `ON DELETE CASCADE`) automatically removes all saves of that share.
+
+### 4.6 `news_cache` (DB fallback for Redis)
 ```sql
 CREATE TABLE news_cache (
     cache_key  VARCHAR(20) PRIMARY KEY,  -- "2026-05-04" or "2026-05-04-14"
@@ -535,6 +618,17 @@ This field is the mechanism for the **manual learning-tree entry point** — fro
 
 The `user_id` is extracted from the JWT, not from the request body.
 
+### 7.4 Agent Tools (`backend/agent/tools.py`)
+
+The LangGraph ReAct agent has access to the following tools:
+
+| Tool | Description |
+|------|-------------|
+| `get_latest_ai_news` | Returns recent AI/ML news headlines from the Redis-cached feed |
+| `fetch_url` | Fetches URL content using `requests` + BeautifulSoup4; strips scripts/styles; returns cleaned text (≤ 4000 chars). Enables the agent to read linked articles or documentation pages the user pastes into chat. |
+
+`fetch_url` sanitises the response: `<script>`, `<style>`, and `<nav>` tags are removed; remaining text is joined and truncated. The tool is only invoked when the LangGraph agent decides the content is needed — it is not called on every message.
+
 ---
 
 ## 8. Knowledge Check (MCQ) System
@@ -582,6 +676,8 @@ Chat Pane (#chat-messages)
 4. Call LLM → parse JSON response → validate structure.
 5. Insert into `mcq_attempts` with `answers = null`, `score = null`.
 6. Return `attempt_id` + `questions` array.
+
+**Option shuffling:** After LLM generation, `_shuffle_options(question)` in `generator.py` randomises the order of the four options using `random.shuffle`. The correct answer is re-located by text identity match and `correct` is updated to the new index. This eliminates LLM position bias (the model tends to place the correct answer in position 1). Both `generate_mcq()` and `generate_mcq_followup()` apply this transform before returning.
 
 **Response:**
 ```json
@@ -696,41 +792,52 @@ GET /quiz/<id>          → render quiz/attempt.html  [require_auth]
 
 The left and right panes are **user-resizable** via drag handles. Alpine.js tracks `sidebarWidth` and `rightPanelWidth` with pixel values; CSS transitions animate open/close.
 
+The left sidebar has **three bottom-nav tabs** (Root / Wall / Profile) controlled by `activeTab` in `appState()`. The default is `'root'`.
+
 ```
 ┌──────────────┬──┬───────────────────────────┬──┬──────────────┐
 │  LEFT PANE   │▌ │       CENTRE PANE         │▌ │  RIGHT PANE  │
 │  resizable   │  │  flex-1, min-w-0          │  │  resizable   │
 │              │  │                           │  │              │
-│ ● New Chat   │  │  Message thread           │  │  AI News     │
-│              │  │  (HTMX beforeend swap     │  │  (HTMX load  │
-│ Session list │  │   on chat submit)         │  │   on mount)  │
-│ (HTMX load)  │  │                           │  │              │
-│              │  │  Inline quiz in           │  │  Tab group:  │
-│ Green dot on │  │  #chat-messages when      │  │  AI / Dev /  │
-│ active thread│  │  "Check Knowledge"        │  │  World       │
-│ (bubbles to  │  │  is clicked               │  │  (Alpine.js) │
-│  parent when │  │                           │  │              │
-│  collapsed)  │  │  [🧠 Check Knowledge]     │  │  Loading     │
-│              │  │  (disabled during loads)  │  │  overlay     │
+│ [Root tab]   │  │  activeTab=root:          │  │  activeTab=root:    │
+│ ● New Chat   │  │    Message thread         │  │    AI News 6-tabs   │
+│ Session list │  │    Inline quiz            │  │                     │
+│ (HTMX load)  │  │  activeTab=wall:          │  │  activeTab=wall:    │
+│ ↗ badge on   │  │    🌍 Public Wall         │  │    🔒 Your Feed     │
+│ imported sess│  │    (HTMX partial)         │  │    (HTMX partial)   │
+│              │  │  activeTab=profile:       │  │  activeTab=profile: │
+│ ─────────    │  │    Profile card           │  │    ⭐ Your Score     │
+│ [Root][Wall] │  │    (HTMX partial)         │  │    (HTMX partial)   │
+│ [Profile]    │  │                           │  │                     │
+│              │  │  [🧠 Check Knowledge]     │  │  Loading overlay    │
+│              │  │  (root tab only)          │  │                     │
 └──────────────┴──┴───────────────────────────┴──┴──────────────┘
            resize handles
 ```
+
+**Bottom nav** (`switchTab(tab)` in `appState()`):
+- `activeTab = 'root'` — shows session list, chat interface, news pane (default)
+- `activeTab = 'wall'` — centre: `GET /wall/public/partial` → `wall_public.html`; right: `GET /wall/private/partial` → `wall_private.html`
+- `activeTab = 'profile'` — centre: `GET /wall/profile/partial` → `profile_main.html`; right: `GET /wall/score/partial` → `profile_score.html`
 
 **Left pane** — `partials/session_list.html` (HTMX-loaded):
 - Groups sessions by: Today / Yesterday / This Week / Older.
 - Session item: title (auto or user-set) + relative timestamp.
 - Hierarchical: `news_discussion` roots are collapsible; `learn_more` children indented.
 - **Green dot active indicator**: a `.knr-dot` `<span>` inside each session row `<a data-session-id="...">`. `window._reapplyActiveDot()` highlights the active row. When a parent is collapsed and the active session is a hidden descendant, the dot appears on the nearest visible ancestor row (softer shade). Triggered by `setActiveSession()`, HTMX `afterSettle` on `#session-list`, and collapse-toggle clicks.
+- **Share button** (📤): shown on root sessions (`parent_session_id IS NULL`); calls `shareSession(id)` to open the share modal.
+- **Import badge** (↗): shown on sessions with `imported_from_share_id IS NOT NULL` to indicate an imported root.
+- **Tree auto-expand**: when a new sub-session is created, `session_list_partial()` computes `open_ids` — the full ancestor chain from the new session to the tree root — and passes it to Jinja2. All ancestors render with `details[open]`. The `htmx:configRequest` hook in `app.js` injects `expand=_activeSessionId` into every session-list request that lacks an explicit `expand` param, so the active path stays open after any sidebar refresh (chat reply, delete, regenerate, etc.).
 - Skeleton placeholder rendered server-side while loading.
 
 **Centre pane** — messages + input bar:
-- `[🧠 Check Knowledge]` strip shown only when a session is active (`x-show="activeSessionId"`).
+- `[🧠 Check Knowledge]` strip shown only when a session is active and `activeTab === 'root'`.
 - Quiz loads **inline** into `#chat-messages` (no new tab).
 - Button label toggles: "🧠 Check Knowledge" → "🧠 Follow-up Quiz" after a quiz is submitted.
 - Button disabled via `:disabled="quizLoading || chatLoading || contentBusy || (quizViewState && !quizViewState.submitted)"`.
 - **`contentBusy`** — single Alpine boolean set `true` during content-loading operations that occupy the centre pane (chat send, quiz generation, section Explore, section quiz, sidebar session switch, learn-more creation). Both Send and Check Knowledge buttons bind to it. News card Explore (`discussArticle()`) intentionally does **not** set `contentBusy` — the session is created in the background and appears in the sidebar without interrupting the current chat view.
 
-**Right pane** — `partials/news_panel.html` (HTMX-loaded):
+**Right pane** — `partials/news_panel.html` (HTMX-loaded when `activeTab === 'root'`):
 - News tab group controlled by Alpine.js `x-data`.
 - Each tab triggers `hx-get=/news/partial?category=<tab>` on activate.
 - **Loading overlay**: absolutely-positioned spinner (`z-20`, `x-show="newsPanelLoading"`) covers the right pane while news is fetching, leaving existing content visible underneath.
@@ -802,9 +909,16 @@ Failure: server returns HTML error fragment → HTMX swaps into `#form-error`.
 | Quiz inline state        | `window.dispatchEvent(CustomEvent('quiz-view-changed'))` from `quiz.js` → `appState.quizViewState` |
 | Quiz answers             | Alpine state in `quizState()` component; auto-saved to DB via `PUT /quiz/attempt/{id}` |
 | Pane widths              | Alpine `sidebarWidth` / `rightPanelWidth` — mousedown drag handlers    |
+| Active sidebar tab       | Alpine `activeTab` in `appState()` — `'root'` / `'wall'` / `'profile'` |
+| Pending follow requests  | Alpine `pendingFollowCount` integer in `appState()` — fetched from `GET /wall/follow-requests/count` when Profile tab is activated; drives red notification badge on Profile tab button |
+| Share modal              | Alpine `shareModal` object in `appState()` — `{open, sessionId, visibility, description}` |
+| Share preview            | `wallOpenPreview(shareId)` fetches `GET /wall/shares/<id>/preview/partial` and injects into `#share-preview-portal` |
+| Ephemeral quiz preview   | `previewQuizState()` Alpine component — reads questions from `<script type="application/json" id="preview-qdata">` data-island; scores client-side; no server write |
 | UI state                 | Alpine.js `x-data` per component (toggles, dropdowns)                 |
 
 **`quizViewState` event flow:** `quiz.js`'s `quizState()` component dispatches `quiz-view-changed` on `init()` and after `submitQuiz()`. `appState().init()` listens for this event and stores `{isQuiz, attemptId, quizSessionId, parentSessionId, submitted, score}` in `quizViewState`. The `htmx:afterSettle` handler clears `quizViewState` when `#chat-messages` no longer contains a `.knr-quiz-root` element.
+
+**JS module rule:** All JavaScript lives in `backend/static/*.js`. No inline `<script>` with logic in templates. HTMX handles server requests; Alpine.js handles client reactivity. Templates may only contain `x-data`, `x-bind`, `@click` attribute bindings — never `<script>` blocks with function definitions.
 
 ---
 
@@ -872,6 +986,31 @@ Failure: server returns HTML error fragment → HTMX swaps into `#form-error`.
 | POST   | `/quiz/retry`                              | Session | Create new attempt (same questions)                   |
 | GET    | `/quiz/attempts`                           | Session | List past attempts for a session                      |
 | GET    | `/quiz/attempt/<id>/relearn/<question_id>` | Session | AI relearn explanation for a wrong answer             |
+
+### Wall
+
+| Method | Path                                          | Auth    | Description                                                    |
+|--------|-----------------------------------------------|---------|----------------------------------------------------------------|
+| GET    | `/wall/public/partial`                        | Session | HTMX partial — public wall card list                           |
+| GET    | `/wall/private/partial`                       | Session | HTMX partial — private/friends feed card list                  |
+| GET    | `/wall/profile/partial`                       | Session | HTMX partial — profile centre pane                             |
+| GET    | `/wall/score/partial`                         | Session | HTMX partial — profile score / star rating right pane          |
+| POST   | `/wall/shares`                                | Session | Create share (body: `{session_id, visibility, description}`)   |
+| DELETE | `/wall/shares/<id>`                           | Session | Delete own share                                               |
+| GET    | `/wall/shares/<id>/preview/partial`           | Session | HTMX partial — full-screen preview modal HTML                  |
+| GET    | `/wall/shares/<id>/sessions/<sid>/preview/partial` | Session | HTMX partial — preview content for one session (messages or ephemeral quiz) |
+| POST   | `/wall/shares/<id>/vote`                      | Session | Cast or change vote (`{vote: 1}` or `{vote: -1}`)              |
+| POST   | `/wall/shares/<id>/import`                    | Session | Deep-copy shared session tree to own Root section              |
+| GET    | `/wall/shares/<id>/comments`                  | Session | List comments for a share (JSON)                               |
+| POST   | `/wall/shares/<id>/comments`                  | Session | Add comment (body: `{body}`)                                   |
+| DELETE | `/wall/shares/<id>/comments/<cid>`            | Session | Delete own comment                                             |
+| POST   | `/wall/shares/<id>/save`                      | Session | Bookmark a public share to My Wall (204); idempotent           |
+| DELETE | `/wall/shares/<id>/save`                      | Session | Remove bookmark from My Wall (204)                             |
+| POST   | `/wall/follow/<uid>`                          | Session | Send follow request; returns `{status: "pending"|"accepted"|"self"}` (200) |
+| DELETE | `/wall/follow/<uid>`                          | Session | Cancel pending request or unfollow accepted follower (204)     |
+| POST   | `/wall/follow-requests/<uid>/accept`          | Session | Accept an incoming follow request (204)                        |
+| POST   | `/wall/follow-requests/<uid>/reject`          | Session | Reject / decline an incoming follow request (204)              |
+| GET    | `/wall/follow-requests/count`                 | Session | Number of pending incoming requests (JSON: `{count: N}`)       |
 
 ---
 
@@ -1913,3 +2052,234 @@ The chat input placeholder reflects the platform's domain breadth:
 > "Ask anything — science, history, technology, economics…"
 
 This replaces the old "Ask anything about AI, ML, or software…" which implied a domain restriction that no longer exists in the AI layer.
+
+---
+
+## 28. Social Wall System
+
+### 28.1 Overview
+
+Users can share any **root session** (their knowledge root, a discussion tree) publicly or with followers only. Shared roots appear as **share cards** on the wall. Other users can vote, comment, preview content, and import the tree to their own Root section.
+
+### 28.2 Share Lifecycle
+
+```
+User clicks 📤 (share button on root session in sidebar)
+  │
+  ├─ Share modal opens (Alpine shareModal state)
+  │   Fields: visibility (public/friends), description
+  │
+  └─ POST /wall/shares → creates shares row
+       │
+       ├─ Source attribution: if session.imported_from_share_id IS NOT NULL
+       │   the new share's source_share_id = the original share (attribution chain)
+       │
+       └─ Share card appears on public wall / private feed
+```
+
+### 28.3 Share Card (`partials/share_card.html`)
+
+Each card shows:
+- Author avatar (initials), star rating, score, `@username`, timestamp
+- Attribution line: "↗ Based on @original_author's root" (when `source_share_id IS NOT NULL`)
+- Session title + visibility badge (Public / Friends only)
+- Collapsible session tree (depth-indented, all sessions in the shared root)
+- Action row: 👍 upvote / 👎 downvote, **Preview** button, context-sensitive action button
+- Collapsible comments section (lazy-loaded via `GET /wall/shares/<id>/comments`)
+
+The template receives a `wall_context` variable that controls which action buttons render:
+
+| `wall_context` | Own card (top-right) | Others' card (top-right) | Action row button |
+|----------------|---------------------|--------------------------|-------------------|
+| `'public'`     | Delete (trash icon) | Follow / Requested / Following | **Save** (bookmark icon) — saves to My Wall |
+| `'private'`    | Delete (trash icon) | Unsave (bookmark icon)   | **Import to Root** — deep-copies session tree |
+| `'profile'`    | Delete (trash icon) | Follow / Requested / Following | *(none)* |
+
+Alpine per-card state: `{ savedToWall, followStatus, myVote, upvotes, downvotes, importDone, importLoading }`
+
+**Import button visibility:** The Import button renders unconditionally (no `x-show`) so it is always visible on first load. Post-import, Alpine's `:class="importDone ? 'hidden' : ''"` hides it. The "✓ Imported" confirmation span and the loading "…" span carry `style="display:none"` as pre-Alpine defaults so they stay hidden until Alpine sets them.
+
+### 28.4 Voting and Scoring
+
+**Vote mechanics:**
+- `POST /wall/shares/<id>/vote` with `{vote: 1}` (upvote) or `{vote: -1}` (downvote)
+- Implemented as `INSERT … ON CONFLICT (share_id, user_id) DO UPDATE SET vote = excluded.vote`
+- A user can change their vote (upsert) or cast opposite to retract
+
+**Score formula:**
+```
+score = SUM(vote * weight) WHERE weight = 10 if vote=1 else 5
+     = upvote_count × 10 + downvote_count × (-5)
+```
+
+**Star thresholds:**
+| Score | Stars |
+|-------|-------|
+| < 50  | 0 ★   |
+| 50    | 1 ★   |
+| 150   | 2 ★   |
+| 350   | 3 ★   |
+| 600   | 4 ★   |
+| 900   | 5 ★   |
+
+Score and stars are computed by `score_to_stars(score)` in `backend/api/wall/service.py` and hydrated into every share card and profile pane via `_hydrate_share_rows()`.
+
+### 28.5 Preview Modal (`partials/share_preview_modal.html`)
+
+Full-screen overlay (`z-50`). Opened by `wallOpenPreview(shareId)` which GETs `/wall/shares/<id>/preview/partial` and injects HTML into `#share-preview-portal`.
+
+Layout:
+```
+┌──────────────────────────────────────────────────────────────┐
+│  [✕ Close]   Preview: <session title>                        │
+├──────────────┬───────────────────────────────────────────────┤
+│  Session tree│  Content pane (#preview-content)             │
+│  (left panel)│  ← initial content loaded inline             │
+│              │                                               │
+│  Click node  │  Chat bubbles (user=indigo right,            │
+│  → HTMX GET  │   assistant=gray left)                       │
+│  /preview/   │  OR                                           │
+│  sessions/id │  Ephemeral MCQ (previewQuizState Alpine       │
+│              │   component — no DB writes)                   │
+└──────────────┴───────────────────────────────────────────────┘
+```
+
+**Ephemeral quiz (`partials/share_session_preview.html`):**
+- Questions JSON embedded in `<script type="application/json" id="preview-qdata">` data-island
+- `previewQuizState()` Alpine component reads the island on `init()`, tracks `selected[]`, computes score client-side after submit
+- Shows correct/incorrect highlighting + score summary; "Try Again" resets state
+- No `fetch()` call on submit — nothing is written to the DB
+
+### 28.6 Import Flow
+
+`POST /wall/shares/<id>/import` triggers a deep copy:
+1. Fetch all `chat_sessions` rows in the shared root (ordered by `depth_level`)
+2. For each session (within `conn.transaction()` for atomicity):
+   - Create new `chat_sessions` row owned by the importer
+   - Map old UUID → new UUID in `id_map`
+   - Set `parent_session_id` using `id_map` (depth-ordered insert preserves FK validity)
+   - Set `imported_from_share_id = share.id` on all imported sessions
+   - For non-quiz sessions: copy `session_messages` rows verbatim (message history)
+   - For quiz sessions: copy session row only (no message history — attempts belong to original owner)
+3. Return the new root session id; sidebar triggers `sessionListRefresh`
+
+**Attribution when re-sharing:**
+If the importer later shares their imported root (`POST /wall/shares`), `create_share()` checks `session.imported_from_share_id → share.source_share_id` and sets `source_share_id` on the new share. `_hydrate_share_rows` batch-fetches `source_attribution` (original author name + share id) for all shares that have `source_share_id IS NOT NULL`.
+
+### 28.7 Private Wall (My Wall)
+
+The private wall (right pane) shows two categories of posts for the viewer:
+
+1. **Own shares** — sessions the viewer personally shared from the sidebar share button. Delete button visible; no import.
+2. **Saved shares** — posts the viewer bookmarked from the public wall via "Save to my wall." Import button visible; unsave (bookmark icon) button visible.
+
+`list_private_shares()` query:
+```sql
+SELECT s.*, (s.user_id = %(viewer)s) AS is_own,
+            (ws.user_id IS NOT NULL)  AS is_saved
+FROM shares s
+JOIN chat_sessions cs ON cs.id = s.session_id
+LEFT JOIN wall_saves ws ON ws.share_id = s.id AND ws.user_id = %(viewer)s
+WHERE s.user_id = %(viewer)s OR ws.user_id = %(viewer)s
+ORDER BY s.created_at DESC
+```
+
+**Workflow — Save → Import:**
+```
+Public wall → click "Save" on any post
+  └─ POST /wall/shares/<id>/save → wall_saves row inserted
+       └─ Post now appears in My Wall (right pane)
+            └─ Click "Import to Root" → session tree deep-copied to user's Root section
+                 └─ Auto-unsave: DELETE /wall/shares/<id>/save (already in Root, no need to keep bookmark)
+```
+
+When the original owner deletes their share, the `wall_saves` row is cascade-deleted automatically (`ON DELETE CASCADE` on `wall_saves.share_id`). The saved post silently disappears from all private walls.
+
+### 28.8 Profile View
+
+| Pane | Template | Content |
+|------|----------|---------|
+| Centre | `profile_main.html` | Avatar (initials), full name, @username, email, member since, stats grid (Shares / Following / Followers), recent 5 shares |
+| Right | `profile_score.html` | Star rating card (gradient), vote breakdown (upvotes / downvotes / share count), scoring rules legend |
+
+### 28.9 `_hydrate_share_rows` — N+1 Prevention
+
+Hydration is batched over a page of share rows. For each batch:
+1. One query: vote tallies + `my_vote` for viewer per `share_id`
+2. One query: comment counts per `share_id`
+3. One query: author scores (from `share_votes`) per `user_id` set
+4. One query: `source_attribution` for shares with `source_share_id IS NOT NULL`
+5. One query: viewer's follow status (`null` / `'pending'` / `'accepted'`) for each share's author — sets `share["follow_status"]`
+6. One query: viewer's `wall_saves` entries — sets `share["saved_to_wall"]` (bool) used by Alpine per-card state
+
+All results are keyed by share id or user id and merged into the share dicts before template rendering. No per-card queries.
+
+### 28.10 Follow Request Approval Flow
+
+Following uses a **request → approve** model (like Instagram private accounts). Every follow action goes through pending first:
+
+```
+Viewer clicks Follow on a share card
+  │
+  └─ POST /wall/follow/<uid>
+       │
+       ├─ Returns {status: "pending"}  ← inserted with status='pending'
+       │   Card button: Follow → Requested (can cancel)
+       │
+       └─ Target opens Profile tab
+            │
+            ├─ pendingFollowCount badge shows on Profile tab button
+            │   (fetched from GET /wall/follow-requests/count)
+            │
+            └─ Follow Requests section in profile_main.html
+                 │
+                 ├─ Accept → POST /wall/follow-requests/<uid>/accept
+                 │   status='accepted'; follower now sees friend feed
+                 │
+                 └─ Decline → POST /wall/follow-requests/<uid>/reject
+                     Record deleted; requester can follow again later
+```
+
+**Rejection design:** rejected requests are deleted (not stored as `status='rejected'`). This allows the requester to retry and keeps the schema simple — the absence of a row means "not following."
+
+**Schema summary** (`011_follow_requests.sql`):
+```sql
+ALTER TABLE user_follows
+    ADD COLUMN IF NOT EXISTS status       VARCHAR(10)  NOT NULL DEFAULT 'accepted',
+    ADD COLUMN IF NOT EXISTS requested_at TIMESTAMPTZ           DEFAULT NOW();
+CREATE INDEX IF NOT EXISTS idx_follows_pending
+    ON user_follows(followed_id, status)
+    WHERE status = 'pending';
+```
+
+### 28.11 Priority Feed Sorting
+
+`list_public_shares()` promotes posts from accepted follows to the top of the public wall:
+
+```sql
+LEFT JOIN user_follows uf
+    ON uf.follower_id = %(viewer)s
+   AND uf.followed_id = s.user_id
+   AND uf.status = 'accepted'
+ORDER BY (uf.follower_id IS NOT NULL) DESC,
+         s.created_at DESC
+```
+
+Posts from people the viewer follows sort first; all remaining posts sort newest-first. No separate "following" feed needed — the public wall itself is priority-personalised.
+
+`list_private_shares()` filters `status = 'accepted'` in its subquery so pending-only connections do not grant feed access:
+```sql
+WHERE follower_id = %(viewer)s AND status = 'accepted'
+```
+
+### 28.12 Follow Button States in Share Cards
+
+Each share card carries `follow_status` (set by `_hydrate_share_rows`). Alpine per-card state tracks this reactively:
+
+| `followStatus` value | Button shown | Action on click |
+|----------------------|-------------|-----------------|
+| `null`               | **Follow** (indigo outline) | `POST /wall/follow/<uid>` → set `followStatus = 'pending'` |
+| `'pending'`          | **Requested** (gray, strikethrough hover) | `DELETE /wall/follow/<uid>` → set `followStatus = null` |
+| `'accepted'`         | **Following** (green, hover turns red) | `DELETE /wall/follow/<uid>` → set `followStatus = null` |
+
+Own cards show neither button (server sets `follow_status = 'self'`, filtered in template). All state transitions happen client-side after a `fetch()` — no HTMX reload needed for follow button UX.

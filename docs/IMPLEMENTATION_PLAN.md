@@ -33,6 +33,8 @@ All Python server code lives in the `backend/` package. When this plan refers to
 | Quiz routes | `backend/api/quiz/routes.py` |
 | Quiz service | `backend/api/quiz/service.py` |
 | MCQ generator | `backend/api/quiz/generator.py` |
+| Wall routes | `backend/api/wall/routes.py` |
+| Wall service | `backend/api/wall/service.py` |
 | LangGraph graph | `backend/agent/graph.py` |
 | Agent prompts | `backend/agent/prompts.py` |
 | Agent tools | `backend/agent/tools.py` |
@@ -1220,6 +1222,362 @@ test('correct answer has Explore deeper button')
 test('Explore deeper on correct answer opens new /learn tab')
 test('Explore deeper on wrong answer opens new /learn tab for that topic')
 test('retry quiz resets all answers and relearn panels')
+```
+
+---
+
+## Phase 14 — Social Wall (`feature/auth`)
+
+### Goal
+
+Users can share knowledge roots publicly or with followers, vote on shared content, preview full session trees (with ephemeral quiz answering), import trees to their own Root section, and view a profile with star-rating score. The session tree auto-expands to the active path after content generation. MCQ options are post-shuffled to remove LLM position bias.
+
+### New Files
+
+```
+backend/api/wall/__init__.py
+backend/api/wall/routes.py               ← Blueprint('/wall'): all wall/profile/social endpoints
+backend/api/wall/service.py              ← share, vote, comment, follow, profile, preview, import service logic
+backend/migrations/009_social.sql        ← shares, share_votes, share_comments, user_follows
+backend/migrations/010_import.sql        ← chat_sessions.imported_from_share_id + shares.source_share_id
+backend/migrations/011_follow_requests.sql ← adds status + requested_at to user_follows; partial index
+backend/migrations/012_cascade_reshare.sql ← changes source_share_id FK to ON DELETE CASCADE
+backend/migrations/013_wall_saves.sql      ← wall_saves: bookmark a public share to private wall
+backend/templates/partials/wall_public.html
+backend/templates/partials/wall_private.html
+backend/templates/partials/share_card.html
+backend/templates/partials/profile_main.html
+backend/templates/partials/profile_score.html
+backend/templates/partials/share_preview_modal.html
+backend/templates/partials/share_session_preview.html
+```
+
+### Modified Files
+
+```
+backend/app.py                           ← register wall_bp
+backend/api/sessions/routes.py          ← open_ids ancestor-chain expand; htmx:configRequest hook
+backend/api/sessions/service.py         ← list_sessions SELECT includes imported_from_share_id
+backend/api/quiz/generator.py           ← add _shuffle_options(); wire into generate_mcq() + generate_mcq_followup()
+backend/templates/app/index.html        ← bottom nav (Root/Wall/Profile); activeTab x-show guards; share modal; preview portal
+backend/templates/partials/session_list.html ← starts_open via open_ids set; share button; ↗ badge
+backend/templates/partials/quiz_inline.html  ← fix Explore button :disabled ternary
+backend/static/app.js                   ← activeTab, switchTab(), shareModal, shareSession(), wallVote(), wallOpenPreview(), wallImport(), previewQuizState(), htmx:configRequest expand hook
+```
+
+### Backend Tasks
+
+#### 7.1 DB Migrations
+
+**`009_social.sql`**
+```sql
+CREATE TABLE shares (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID REFERENCES users(id) ON DELETE CASCADE,
+    session_id      UUID REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    visibility      VARCHAR(10) NOT NULL DEFAULT 'public',
+    description     TEXT,
+    source_share_id UUID REFERENCES shares(id) ON DELETE SET NULL,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE share_votes (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    share_id   UUID REFERENCES shares(id) ON DELETE CASCADE,
+    user_id    UUID REFERENCES users(id) ON DELETE CASCADE,
+    vote       SMALLINT NOT NULL CHECK (vote IN (1, -1)),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(share_id, user_id)
+);
+
+CREATE TABLE share_comments (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    share_id   UUID REFERENCES shares(id) ON DELETE CASCADE,
+    user_id    UUID REFERENCES users(id) ON DELETE CASCADE,
+    body       TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE user_follows (
+    follower_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    followed_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (follower_id, followed_id)
+);
+```
+
+**`010_import.sql`**
+```sql
+ALTER TABLE chat_sessions
+    ADD COLUMN IF NOT EXISTS imported_from_share_id UUID REFERENCES shares(id) ON DELETE SET NULL;
+ALTER TABLE shares
+    ADD COLUMN IF NOT EXISTS source_share_id UUID REFERENCES shares(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_imported ON chat_sessions(imported_from_share_id)
+    WHERE imported_from_share_id IS NOT NULL;
+```
+
+**`011_follow_requests.sql`**
+```sql
+ALTER TABLE user_follows
+    ADD COLUMN IF NOT EXISTS status       VARCHAR(10)  NOT NULL DEFAULT 'accepted',
+    ADD COLUMN IF NOT EXISTS requested_at TIMESTAMPTZ           DEFAULT NOW();
+CREATE INDEX IF NOT EXISTS idx_follows_pending
+    ON user_follows(followed_id, status)
+    WHERE status = 'pending';
+```
+
+**`012_cascade_reshare.sql`**
+```sql
+ALTER TABLE shares DROP CONSTRAINT IF EXISTS shares_source_share_id_fkey;
+ALTER TABLE shares ADD CONSTRAINT shares_source_share_id_fkey
+    FOREIGN KEY (source_share_id) REFERENCES shares(id) ON DELETE CASCADE;
+```
+
+**`013_wall_saves.sql`**
+```sql
+CREATE TABLE IF NOT EXISTS wall_saves (
+    user_id  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    share_id UUID NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
+    saved_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, share_id)
+);
+CREATE INDEX IF NOT EXISTS idx_wall_saves_user ON wall_saves(user_id, saved_at DESC);
+```
+
+#### 7.2 `backend/api/wall/service.py`
+
+Key functions:
+
+| Function | Responsibility |
+|----------|---------------|
+| `score_to_stars(score)` | Threshold lookup: 50/150/350/600/900 → 0–5 stars |
+| `get_user_score(user_id)` | Batched SUM of weighted votes across all user's shares |
+| `create_share(user_id, session_id, visibility, description)` | Validates ownership; checks `imported_from_share_id` for attribution; inserts with `source_share_id` if applicable |
+| `delete_share(user_id, share_id)` | Ownership check then DELETE |
+| `_hydrate_share_rows(rows, viewer_user_id)` | Batch fetch: tallies, my_vote, comment counts, author scores, source attribution, follow status, saved_to_wall — no per-card queries |
+| `list_public_shares(viewer_user_id, limit, offset)` | SELECTs all public shares; LEFT JOIN accepted follows to sort followed-authors' posts first, then newest-first |
+| `list_private_shares(viewer_user_id, limit, offset)` | Viewer's own shares + wall_saves entries; LEFT JOIN wall_saves; returns is_own + is_saved flags |
+| `save_to_wall(user_id, share_id)` | INSERT INTO wall_saves ON CONFLICT DO NOTHING; rejects own shares |
+| `unsave_from_wall(user_id, share_id)` | DELETE FROM wall_saves; idempotent |
+| `cast_vote(voter_user_id, share_id, vote)` | UPSERT ON CONFLICT; returns new tallies + updated author score |
+| `add_comment` / `list_comments` / `delete_comment` | Standard CRUD with ownership check on delete |
+| `follow_user(follower_id, followed_id)` | INSERT with `status='pending'`; returns `{status: "pending"\|"accepted"\|"self"}` |
+| `cancel_follow(follower_id, followed_id)` | DELETE record regardless of status (cancels pending or accepted) |
+| `accept_follow_request(current_user_id, requester_id)` | UPDATE status='accepted' on the matching pending row |
+| `reject_follow_request(current_user_id, requester_id)` | DELETE the pending row (requester can re-request later) |
+| `get_pending_requests(user_id)` | Returns list of requesters with pending `status` rows for `followed_id = user_id` |
+| `get_profile(user_id, viewer_id)` | is_following (status='accepted' only), is_self, follow_request_sent flags; pending_requests list (own profile only); recent_shares; score + stars |
+| `get_share_preview(share_id)` | Session tree + initial content for first session |
+| `get_session_preview_content(share_session_id, session_id)` | Messages (with roles) or quiz questions without `correct` field |
+| `import_share(user_id, share_id)` | Deep copy within `conn.transaction()`: id_map old→new UUID, depth-ordered INSERT, message copy for non-quiz sessions, `imported_from_share_id` set on all new sessions |
+
+#### 7.3 Session Tree Auto-Expand
+
+**`backend/api/sessions/routes.py` — `session_list_partial()`:**
+```python
+expand_id = request.args.get('expand') or request.args.get('expand_id')
+open_ids: set[str] = set()
+if expand_id:
+    parent_map = {s['id']: s.get('parent_session_id') for s in sessions}
+    cur: str | None = expand_id
+    while cur:
+        open_ids.add(cur)
+        cur = parent_map.get(cur)
+return render_template("partials/session_list.html", sessions=sessions, expand_id=expand_id, open_ids=open_ids)
+```
+
+**`backend/static/app.js` — `htmx:configRequest` hook:**
+```js
+document.body.addEventListener('htmx:configRequest', e => {
+    const path = e.detail.path || '';
+    if (path.includes('/sessions/partial') && !e.detail.parameters.expand && _activeSessionId) {
+        e.detail.parameters.expand = _activeSessionId;
+    }
+});
+```
+
+This ensures the active session's full ancestor path stays open after any sidebar refresh (chat reply, delete, session switch).
+
+#### 7.4 MCQ Option Shuffle
+
+**`backend/api/quiz/generator.py`:**
+```python
+def _shuffle_options(question: dict) -> dict:
+    correct_text = question['options'][question['correct']]
+    random.shuffle(question['options'])
+    question['correct'] = question['options'].index(correct_text)
+    return question
+
+# Applied in both generation functions:
+return [_shuffle_options(q) for q in questions[:n_questions]]
+```
+
+This eliminates LLM position bias (model tends to place correct answer in option B).
+
+#### 7.5 Wall Routes (`backend/api/wall/routes.py`)
+
+**HTMX partials:**
+- `GET /wall/public/partial` → `wall_public.html`
+- `GET /wall/private/partial` → `wall_private.html`
+- `GET /wall/profile/partial` → `profile_main.html`
+- `GET /wall/score/partial` → `profile_score.html`
+- `GET /wall/shares/<id>/preview/partial` → `share_preview_modal.html`
+- `GET /wall/shares/<id>/sessions/<sid>/preview/partial` → `share_session_preview.html`
+
+**JSON APIs:**
+- `POST /wall/shares` — create; body: `{session_id, visibility, description}`
+- `DELETE /wall/shares/<id>` — delete own share
+- `POST /wall/shares/<id>/vote` — body: `{vote: 1|-1}`
+- `POST /wall/shares/<id>/import` — deep copy
+- `GET /wall/shares/<id>/comments` — list
+- `POST /wall/shares/<id>/comments` — add; body: `{body}`
+- `DELETE /wall/shares/<id>/comments/<cid>` — delete own comment
+- `POST /wall/shares/<id>/save` — save to My Wall (204); idempotent
+- `DELETE /wall/shares/<id>/save` — unsave from My Wall (204)
+- `POST /wall/follow/<uid>` — send follow request; returns `{status: "pending"|"accepted"|"self"}`
+- `DELETE /wall/follow/<uid>` — cancel pending request or unfollow accepted follower
+- `POST /wall/follow-requests/<uid>/accept` — accept incoming follow request (204)
+- `POST /wall/follow-requests/<uid>/reject` — decline incoming follow request (204)
+- `GET /wall/follow-requests/count` — number of pending incoming requests (JSON)
+
+### Frontend Tasks
+
+#### 7.6 Bottom Nav + `activeTab` (`app/index.html` + `app.js`)
+
+Three buttons at the bottom of the left sidebar:
+- `[Root]` → `switchTab('root')` — shows session list, chat, news pane
+- `[Wall]` → `switchTab('wall')` — loads public + private wall partials
+- `[Profile]` → `switchTab('profile')` — fetches `GET /wall/follow-requests/count` to update `pendingFollowCount`, then loads profile + score partials
+
+`x-show="activeTab === 'root'"` gates the session list, `+` button, chat input, and Check Knowledge bar.
+
+The Profile tab button shows a red notification badge when `pendingFollowCount > 0`:
+```html
+<span x-show="pendingFollowCount > 0" x-cloak
+      class="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+  <span x-text="pendingFollowCount > 9 ? '9+' : pendingFollowCount"></span>
+</span>
+```
+
+#### 7.7 Share Modal (`app/index.html` + `app.js`)
+
+Alpine `shareModal` object in `appState()`:
+```js
+shareModal: { open: false, sessionId: null, visibility: 'public', description: '' }
+```
+`shareSession(id)` sets `shareModal.open = true`, `shareModal.sessionId = id`.
+`submitShare()` calls `POST /wall/shares`, closes modal, fires `htmx.trigger` on `#wall-public-pane`.
+
+#### 7.8 Share Card (`partials/share_card.html`)
+
+Alpine `x-data` per card: `{treeOpen, commentsOpen, comments, myVote, upvotes, downvotes, importDone, importLoading, followStatus, savedToWall}`.
+- `savedToWall` is initialised from `{{ loop_share.saved_to_wall | tojson }}`
+- `followStatus` is initialised from `{{ loop_share.follow_status | tojson }}` (can be `null`, `"pending"`, or `"accepted"`)
+- Vote buttons call `wallVote(shareId, 1)` / `wallVote(shareId, -1)`; update counts + my_vote in-place
+- Follow buttons call `window.wallFollowAction(userId, action, $data)` which updates `followStatus` in-place
+- Preview calls `wallOpenPreview(shareId)` → GET partial → inject into `#share-preview-portal`
+
+Template receives `wall_context` (`'public'` | `'private'` | `'profile'`) to determine which buttons render:
+
+| Context | Own card top-right | Others' card top-right | Action row for others |
+|---------|-------------------|----------------------|-----------------------|
+| `public` | Delete | Follow/Requested/Following | **Save** button |
+| `private` | Delete | Unsave (bookmark) | **Import to Root** button |
+| `profile` | Delete | Follow/Requested/Following | *(none)* |
+
+**`window.wallSaveToWall(shareId, component)` in `app.js`:**
+- If not saved: `POST /wall/shares/<id>/save` → sets `component.savedToWall = true`, toast "Saved to your wall"; if `activeTab === 'wall'` also refreshes private wall partial via HTMX
+- If already saved: `DELETE /wall/shares/<id>/save` → sets `component.savedToWall = false`, refreshes private wall partial via HTMX
+
+**`window.wallImport(shareId, component)` in `app.js`:**
+- `POST /wall/shares/<id>/import` → deep-copies session tree → sets `component.importDone = true`, refreshes session list
+- On success: auto-calls `DELETE /wall/shares/<id>/save` to clean up the bookmark (already in Root)
+- Import button visibility is controlled via Alpine `:class="importDone ? 'hidden' : ''"` (not `x-show`) so it renders immediately on page load and is only hidden after a successful import
+
+**`window.wallFollowAction(userId, action, componentData)` in `app.js`:**
+- `action = 'follow'` → `POST /wall/follow/<uid>` → sets `componentData.followStatus = response.status`
+- `action = 'cancel'` or `'unfollow'` → `DELETE /wall/follow/<uid>` → sets `componentData.followStatus = null`
+
+**`window.wallRespondToFollowRequest(requesterId, action, btn)` in `app.js`:**
+- `action = 'accept'|'reject'` → `POST /wall/follow-requests/<uid>/<action>` (204)
+- On success: removes the `#follow-req-<id>` row from DOM, decrements `pendingFollowCount`, reloads profile partial via `htmx.ajax`
+
+#### 7.9 Ephemeral Quiz Preview (`partials/share_session_preview.html`)
+
+```html
+<script type="application/json" id="preview-qdata">{{ questions | tojson }}</script>
+```
+
+`previewQuizState()` in `app.js`:
+```js
+function previewQuizState() {
+    return {
+        questions: JSON.parse(document.getElementById('preview-qdata').textContent),
+        selected: {},
+        submitted: false,
+        score: 0,
+        submit() { /* compute score from q.correct, set submitted = true */ },
+        reset() { this.selected = {}; this.submitted = false; this.score = 0; }
+    }
+}
+```
+No `fetch()` on submit — purely client-side. Not saved to DB.
+
+### Unit Tests (Backend)
+
+```python
+# tests/unit/test_wall.py
+def test_create_share_returns_201(authed_client, session_id): ...
+def test_create_share_for_other_users_session_returns_403(authed_client): ...
+def test_delete_own_share_returns_204(authed_client, share_id): ...
+def test_delete_other_users_share_returns_403(authed_client): ...
+def test_upvote_increments_score(authed_client, share_id): ...
+def test_downvote_decrements_score(authed_client, share_id): ...
+def test_changing_vote_updates_score(authed_client, share_id): ...
+def test_own_shares_appear_in_private_feed(authed_client): ...
+def test_followed_users_shares_appear_in_private_feed(authed_client): ...
+def test_import_creates_deep_copy(authed_client, share_id): ...
+def test_import_sets_imported_from_share_id(authed_client, share_id): ...
+def test_resharing_import_sets_source_share_id(authed_client, imported_session_id): ...
+def test_score_to_stars_thresholds(): ...  # 0,50,150,350,600,900
+# Follow request tests
+def test_follow_creates_pending_request(authed_client, other_user_id): ...
+def test_follow_returns_pending_status(authed_client, other_user_id): ...
+def test_follow_self_returns_self_status(authed_client): ...
+def test_duplicate_follow_returns_existing_status(authed_client, other_user_id): ...
+def test_cancel_pending_request_returns_204(authed_client, other_user_id): ...
+def test_accept_follow_request_sets_accepted(authed_client, requester_id): ...
+def test_accept_nonexistent_request_returns_404(authed_client): ...
+def test_reject_follow_request_deletes_row(authed_client, requester_id): ...
+def test_pending_user_not_in_private_feed(authed_client, other_user_id): ...
+def test_accepted_user_appears_in_private_feed(authed_client, other_user_id): ...
+def test_followed_posts_sort_first_in_public_wall(authed_client): ...
+def test_follow_request_count_returns_count(authed_client, requester_id): ...
+```
+
+### E2E Tests
+
+```ts
+// e2e/wall.spec.ts
+test('root tab shows session list and chat by default')
+test('wall tab loads public wall and private feed')
+test('profile tab loads profile card and score pane')
+test('sharing a root session creates a card on public wall')
+test('upvoting a card updates the vote count')
+test('own share appears in private feed')
+test('preview modal shows session tree and chat messages')
+test('preview quiz can be answered without saving')
+test('import copies session tree to Root section')
+test('imported session shows ↗ badge in sidebar')
+test('resharing an imported root tags original owner')
+test('sidebar tree stays expanded after chat reply')
+// Follow request E2E
+test('clicking Follow on a card shows Requested state immediately')
+test('pending-only user posts do not appear in private feed')
+test('Profile tab shows notification badge when follow requests exist')
+test('accepting follow request removes it from pending list')
+test('declining follow request removes it from pending list')
+test('accepting follow request causes accepted user posts to appear in private feed')
 ```
 
 ---

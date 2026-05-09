@@ -1,0 +1,149 @@
+{# partials/share_session_preview.html — content for one session in the preview modal #}
+{# Variable: content (dict: type, title, messages or questions) #}
+<div class="px-5 py-4">
+  {% if content.type == 'messages' %}
+    {% if content.messages and content.messages|length > 0 %}
+      {% for msg in content.messages %}
+      <div class="mb-3 {% if msg.role == 'user' %}flex justify-end{% endif %}">
+
+        {% if msg.role == 'user' %}
+          {# User bubble #}
+          <div class="max-w-prose bg-indigo-600 text-white rounded-2xl rounded-br-sm px-4 py-2 text-sm"
+               style="white-space: pre-wrap; word-break: break-word;">
+            {{ msg.content.text }}
+          </div>
+
+        {% elif msg.content.type == 'sectioned' %}
+          {# Rich sectioned AI response — read-only, mirrors sectioned_message.html styling #}
+          <div class="max-w-2xl w-full">
+            {% set data = msg.content %}
+
+            {% if data.intro %}
+            <div class="mb-3 px-4 py-3 bg-blue-50 border border-blue-100 rounded-xl text-sm text-gray-700 leading-relaxed">
+              {{ data.intro }}
+            </div>
+            {% endif %}
+
+            {% for section in data.sections %}
+            <div class="mb-3 bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+              <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
+                <span class="text-yellow-500" aria-hidden="true">⚡</span>
+                <h3 class="font-semibold text-gray-800 text-sm">{{ section.title }}</h3>
+              </div>
+              <div class="px-4 py-3 space-y-2">
+                <p class="text-sm text-gray-700 leading-relaxed">{{ section.content }}</p>
+                {% if section.key_points %}
+                <ul class="mt-2 space-y-1">
+                  {% for point in section.key_points %}
+                  <li class="flex items-start gap-1.5 text-xs text-gray-600">
+                    <span class="mt-0.5 flex-shrink-0 w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+                    <span>{{ point }}</span>
+                  </li>
+                  {% endfor %}
+                </ul>
+                {% endif %}
+                {% if section.misconception %}
+                <div class="mt-2 flex items-start gap-2 px-3 py-2 bg-amber-50 border border-amber-100 rounded-lg">
+                  <span class="flex-shrink-0 text-amber-500 text-xs mt-0.5" aria-hidden="true">⚠</span>
+                  <p class="text-xs text-amber-800 leading-relaxed">
+                    <span class="font-semibold">Common misconception:</span> {{ section.misconception }}
+                  </p>
+                </div>
+                {% endif %}
+              </div>
+            </div>
+            {% endfor %}
+
+            {% if data.outro %}
+            <div class="px-4 py-3 bg-gray-50 border border-gray-100 rounded-xl text-xs text-gray-500 italic">
+              {{ data.outro }}
+            </div>
+            {% endif %}
+          </div>
+
+        {% else %}
+          {# Plain text AI bubble #}
+          <div class="max-w-prose bg-gray-100 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-3 text-sm"
+               style="white-space: pre-wrap; word-break: break-word;">
+            {{ msg.content.text }}
+          </div>
+        {% endif %}
+
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="text-sm text-gray-400 text-center py-8">No messages in this session.</p>
+    {% endif %}
+
+  {% elif content.type == 'quiz' %}
+    <script type="application/json" id="preview-qdata">{{ content.questions | tojson }}</script>
+    <div x-data="previewQuizState()" x-init="init()" class="max-w-2xl mx-auto pb-6">
+      <h3 class="text-sm font-semibold text-gray-800 mb-4">🧪 {{ content.title }}</h3>
+
+      <div class="mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-xs text-amber-700">
+        ⚠️ Preview mode — answers are not saved
+      </div>
+
+      <div x-show="submitted" class="mb-4 rounded-xl p-3 text-center text-xs font-medium"
+           :class="score >= Math.ceil(questions.length * 0.6)
+                   ? 'bg-green-50 border border-green-200 text-green-800'
+                   : 'bg-orange-50 border border-orange-200 text-orange-800'">
+        <span x-text="score"></span>/<span x-text="questions.length"></span> correct
+        <span x-show="score >= Math.ceil(questions.length * 0.6)"> — Great work!</span>
+        <span x-show="score < Math.ceil(questions.length * 0.6)"> — Keep trying!</span>
+      </div>
+
+      <div class="space-y-4">
+        <template x-for="(q, qi) in questions" :key="qi">
+          <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+            <div class="px-4 pt-4 pb-3">
+              <div class="flex items-start gap-2 mb-3">
+                <span class="flex-shrink-0 w-5 h-5 rounded-full bg-gray-100 text-gray-500 text-xs flex items-center justify-center font-semibold" x-text="qi + 1"></span>
+                <p class="text-xs font-medium text-gray-800 leading-relaxed" x-text="q.text"></p>
+              </div>
+              <div x-show="submitted" class="mb-2">
+                <span x-show="answers[qi] === q.correct" class="inline-flex items-center gap-1 text-xs font-semibold text-green-700 bg-green-50 px-2 py-0.5 rounded-full border border-green-200">✓ Correct</span>
+                <span x-show="answers[qi] !== q.correct" class="inline-flex items-center gap-1 text-xs font-semibold text-red-700 bg-red-50 px-2 py-0.5 rounded-full border border-red-200">✗ Incorrect</span>
+              </div>
+              <div class="space-y-1.5">
+                <template x-for="(opt, oi) in q.options" :key="oi">
+                  <button
+                    type="button"
+                    @click="!submitted && (answers[qi] = oi)"
+                    :class="{
+                      'border-indigo-500 bg-indigo-50 text-indigo-700': !submitted && answers[qi] === oi,
+                      'border-green-400 bg-green-50 text-green-800': submitted && oi === q.correct,
+                      'border-red-300 bg-red-50 text-red-700': submitted && answers[qi] === oi && oi !== q.correct,
+                      'border-gray-200 text-gray-700': !(submitted && oi === q.correct) && !(submitted && answers[qi] === oi && oi !== q.correct) && !(answers[qi] === oi && !submitted)
+                    }"
+                    class="w-full text-left text-xs px-3 py-2 rounded-lg border transition-colors cursor-pointer"
+                    x-text="opt"
+                  ></button>
+                </template>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <div class="mt-4 flex gap-3">
+        <button
+          type="button"
+          x-show="!submitted"
+          @click="submitPreviewQuiz()"
+          :disabled="Object.keys(answers).length === 0"
+          class="px-5 py-2 bg-indigo-600 text-white rounded-xl text-xs font-medium hover:bg-indigo-700 disabled:opacity-50"
+        >Submit</button>
+        <button
+          type="button"
+          x-show="submitted"
+          @click="answers = {}; submitted = false; score = 0"
+          class="px-5 py-2 bg-gray-100 text-gray-700 rounded-xl text-xs font-medium hover:bg-gray-200"
+        >Try Again</button>
+      </div>
+    </div>
+
+  {% else %}
+    <p class="text-sm text-gray-400 text-center py-8">No content available.</p>
+  {% endif %}
+</div>

@@ -219,6 +219,62 @@ function appState() {
     sidebarWidth: parseInt(localStorage.getItem('knroot_sidebar_w') || '256'),
     rightPanelWidth: parseInt(localStorage.getItem('knroot_right_w') || '320'),
     isPanelDragging: false,
+    activeTab: 'root',
+    pendingFollowCount: 0,
+    shareModal: { open: false, sessionId: null, visibility: 'public', description: '', loading: false },
+
+    switchTab(tab) {
+      this.activeTab = tab;
+      if (tab === 'wall') {
+        htmx.ajax('GET', '/wall/public/partial', { target: '#chat-messages', swap: 'innerHTML' });
+        htmx.ajax('GET', '/wall/private/partial', { target: '#right-panel', swap: 'innerHTML' });
+      } else if (tab === 'profile') {
+        htmx.ajax('GET', '/wall/profile/partial', { target: '#chat-messages', swap: 'innerHTML' });
+        htmx.ajax('GET', '/wall/score/partial', { target: '#right-panel', swap: 'innerHTML' });
+        var self = this;
+        fetch('/wall/follow-requests/count')
+          .then(function(r) { return r.json(); })
+          .then(function(d) { self.pendingFollowCount = d.count || 0; })
+          .catch(function() {});
+      } else if (tab === 'root') {
+        htmx.ajax('GET', '/news/partial?category=ai', { target: '#right-panel', swap: 'innerHTML' });
+        if (this.activeSessionId) {
+          htmx.ajax('GET', '/sessions/' + this.activeSessionId + '/messages/partial',
+                    { target: '#chat-messages', swap: 'innerHTML' });
+        } else {
+          const messages = document.getElementById('chat-messages');
+          if (messages) {
+            messages.innerHTML =
+              '<div id="chat-welcome" class="flex flex-col items-center justify-center h-full text-gray-400">' +
+              '<p class="text-lg font-medium">Start a conversation</p>' +
+              '<p class="text-sm mt-1">Ask anything or click Explore on a news article</p>' +
+              '</div>';
+          }
+        }
+      }
+    },
+
+    submitShare() {
+      if (!this.shareModal.sessionId) return;
+      this.shareModal.loading = true;
+      fetch('/wall/shares', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: this.shareModal.sessionId,
+          visibility: this.shareModal.visibility,
+          description: this.shareModal.description,
+        }),
+      })
+        .then((r) => { if (!r.ok) return r.json().then((d) => Promise.reject(d.error || 'Share failed')); return r.json(); })
+        .then(() => {
+          this.shareModal.open = false;
+          this.shareModal.description = '';
+          Toast.success('Shared to your wall!');
+        })
+        .catch((err) => Toast.error(typeof err === 'string' ? err : 'Could not share'))
+        .finally(() => { this.shareModal.loading = false; });
+    },
 
     init() {
       const saved = localStorage.getItem('knroot_sidebar');
@@ -693,4 +749,200 @@ window.regenerateSession = function (sessionId, sessionType) {
       Toast.success('Sub-thread regenerated');
     })
     .catch((err) => Toast.error(typeof err === 'string' ? err : 'Could not regenerate'));
+};
+
+// =============================================================================
+// Wall — vote, comment, follow helpers
+// =============================================================================
+
+window.shareSession = function (sessionId) {
+  const data = window._getAppData ? _getAppData() : null;
+  if (!data) return;
+  data.shareModal.sessionId = sessionId;
+  data.shareModal.visibility = 'public';
+  data.shareModal.description = '';
+  data.shareModal.open = true;
+};
+
+window.wallVote = function (shareId, vote, component) {
+  // vote: 1 | -1
+  // If clicking the same vote again, remove it (toggle to 0)
+  var newVote = component.myVote === vote ? 0 : vote;
+  fetch('/wall/shares/' + shareId + '/vote', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vote: newVote }),
+  })
+    .then(function (r) { if (!r.ok) throw new Error('Vote failed'); return r.json(); })
+    .then(function (data) {
+      component.myVote = data.my_vote;
+      component.upvotes = data.upvotes;
+      component.downvotes = data.downvotes;
+    })
+    .catch(function () { Toast.error('Could not record vote'); });
+};
+
+window.wallLoadComments = function (shareId, component) {
+  fetch('/wall/shares/' + shareId + '/comments')
+    .then(function (r) { return r.json(); })
+    .then(function (data) { component.comments = data; })
+    .catch(function () {});
+};
+
+window.wallPostComment = function (shareId, content, component) {
+  if (!content || !content.trim()) return;
+  component.submitting = true;
+  fetch('/wall/shares/' + shareId + '/comments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: content }),
+  })
+    .then(function (r) { if (!r.ok) throw new Error('Comment failed'); return r.json(); })
+    .then(function (comment) {
+      component.comments.push(comment);
+      component.commentText = '';
+    })
+    .catch(function () { Toast.error('Could not post comment'); })
+    .finally(function () { component.submitting = false; });
+};
+
+window.wallDeleteComment = function (commentId, component) {
+  fetch('/wall/comments/' + commentId, { method: 'DELETE' })
+    .then(function (r) { if (!r.ok) throw new Error('Delete failed'); })
+    .then(function () {
+      component.comments = component.comments.filter(function (c) { return c.id !== commentId; });
+    })
+    .catch(function () { Toast.error('Could not delete comment'); });
+};
+
+window.wallFollow = function (userId, component) {
+  var method = component.isFollowing ? 'DELETE' : 'POST';
+  fetch('/wall/follow/' + userId, { method: method })
+    .then(function (r) { if (!r.ok) throw new Error('Follow failed'); })
+    .then(function () { component.isFollowing = !component.isFollowing; })
+    .catch(function () { Toast.error('Could not update follow status'); });
+};
+
+// Alpine component for preview quiz (ephemeral, no server save)
+function previewQuizState() {
+  return {
+    questions: [],
+    answers: {},
+    submitted: false,
+    score: 0,
+    init() {
+      const el = document.getElementById('preview-qdata');
+      if (el) {
+        try { this.questions = JSON.parse(el.textContent); } catch (_) {}
+      }
+    },
+    submitPreviewQuiz() {
+      var s = 0;
+      for (var i = 0; i < this.questions.length; i++) {
+        if (this.answers[i] === this.questions[i].correct) s++;
+      }
+      this.score = s;
+      this.submitted = true;
+    },
+  };
+}
+
+window.wallOpenPreview = function (shareId) {
+  var portal = document.getElementById('share-preview-portal');
+  if (!portal) return;
+  htmx.ajax('GET', '/wall/shares/' + shareId + '/preview/partial', {
+    target: '#share-preview-portal',
+    swap: 'innerHTML',
+  });
+};
+
+// Follow / unfollow / cancel — updates Alpine followStatus on the card.
+window.wallFollowAction = function (userId, action, componentData) {
+  if (action === 'follow') {
+    fetch('/wall/follow/' + userId, { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        componentData.followStatus = d.status === 'self' ? null : d.status;
+        if (d.status === 'pending') Toast.success('Follow request sent');
+        else if (d.status === 'accepted') Toast.success('Now following');
+      })
+      .catch(function () { Toast.error('Could not send follow request'); });
+  } else {
+    fetch('/wall/follow/' + userId, { method: 'DELETE' })
+      .then(function (r) {
+        if (r.ok) {
+          componentData.followStatus = null;
+          Toast.success(action === 'cancel' ? 'Follow request cancelled' : 'Unfollowed');
+        } else {
+          Toast.error('Action failed');
+        }
+      })
+      .catch(function () { Toast.error('Action failed'); });
+  }
+};
+
+// Accept or reject an incoming follow request (called from profile_main.html).
+window.wallRespondToFollowRequest = function (requesterId, action, btn) {
+  var row = document.getElementById('follow-req-' + requesterId);
+  fetch('/wall/follow-requests/' + requesterId + '/' + action, { method: 'POST' })
+    .then(function (r) {
+      if (!r.ok) throw new Error('Failed');
+      if (row) row.remove();
+      // Decrement badge in the bottom nav
+      var appData = window._getAppData && window._getAppData();
+      if (appData && appData.pendingFollowCount > 0) appData.pendingFollowCount--;
+      Toast.success(action === 'accept' ? 'Follow request accepted' : 'Request declined');
+      // Reload profile so follower count updates
+      htmx.ajax('GET', '/wall/profile/partial', { target: '#chat-messages', swap: 'innerHTML' });
+    })
+    .catch(function () { Toast.error('Could not process request'); });
+};
+
+// Save a public wall post to the viewer's private wall (or unsave if already saved).
+window.wallSaveToWall = function (shareId, component) {
+  var alreadySaved = component.savedToWall;
+  var method = alreadySaved ? 'DELETE' : 'POST';
+  fetch('/wall/shares/' + shareId + '/save', { method: method })
+    .then(function (r) {
+      if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || 'Failed'); });
+    })
+    .then(function () {
+      if (alreadySaved) {
+        component.savedToWall = false;
+        htmx.ajax('GET', '/wall/private/partial', { target: '#right-panel', swap: 'innerHTML' });
+        Toast.success('Removed from your wall');
+      } else {
+        component.savedToWall = true;
+        Toast.success('Saved to your wall');
+        // Immediately refresh My Wall so the saved post appears in the right pane.
+        // Only do this while on the Wall tab (right pane belongs to My Wall there).
+        var appData = window._getAppData && window._getAppData();
+        if (appData && appData.activeTab === 'wall') {
+          htmx.ajax('GET', '/wall/private/partial', { target: '#right-panel', swap: 'innerHTML' });
+        }
+      }
+    })
+    .catch(function (err) { Toast.error(err.message || 'Could not update wall'); });
+};
+
+window.wallImport = function (shareId, component) {
+  component.importLoading = true;
+  fetch('/wall/shares/' + shareId + '/import', { method: 'POST' })
+    .then(function (r) {
+      if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || 'Import failed'); });
+      return r.json();
+    })
+    .then(function () {
+      component.importDone = true;
+      Toast.success('Imported! Find it in your Root section.');
+      // Refresh session list so the imported session appears in the sidebar
+      var sl = document.getElementById('session-list');
+      if (sl) htmx.trigger(sl, 'sessionListRefresh');
+      // Auto-unsave from private wall after successful import (already have it now)
+      fetch('/wall/shares/' + shareId + '/save', { method: 'DELETE' }).catch(function () {});
+    })
+    .catch(function (err) {
+      Toast.error(err.message || 'Could not import');
+    })
+    .finally(function () { component.importLoading = false; });
 };

@@ -1,0 +1,74 @@
+{# partials/share_preview_modal.html — preview modal for a shared knowledge root #}
+{# Variable: preview (dict) #}
+<div
+  id="share-preview-overlay"
+  x-data="{ open: true }"
+  x-show="open"
+  x-cloak
+  class="fixed inset-0 z-50 flex flex-col bg-black/60"
+  @keydown.escape.window="open = false; document.getElementById('share-preview-portal').innerHTML = ''"
+>
+  <div class="flex flex-col bg-white h-full max-h-screen overflow-hidden shadow-2xl mx-4 my-4 rounded-2xl md:mx-8 md:my-6">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200 flex-shrink-0">
+      <div>
+        <h2 class="text-sm font-semibold text-gray-900">{{ preview.session_title }}</h2>
+        <p class="text-xs text-gray-500">by {{ preview.author_name }} (@{{ preview.author_username }})
+          {% if preview.description %} · {{ preview.description }}{% endif %}</p>
+      </div>
+      <button
+        @click="open = false; document.getElementById('share-preview-portal').innerHTML = ''"
+        class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100"
+        aria-label="Close preview"
+      >
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Body: tree + content -->
+    <div class="flex flex-1 min-h-0 overflow-hidden">
+
+      <!-- Left: session tree -->
+      <div class="w-56 flex-shrink-0 border-r border-gray-200 overflow-y-auto bg-gray-50 py-2">
+        <p class="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Knowledge Tree</p>
+        {% for node in preview.tree %}
+        <button
+          hx-get="/wall/shares/{{ preview.id }}/sessions/{{ node.id }}/preview/partial"
+          hx-target="#preview-content"
+          hx-swap="innerHTML"
+          hx-indicator="#preview-spinner"
+          class="w-full text-left flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-700
+                 hover:bg-indigo-50 hover:text-indigo-700 transition-colors
+                 {% if node.id == preview.initial_session_id %}bg-indigo-50 text-indigo-700 font-medium{% endif %}"
+          style="padding-left: {{ (node.depth_level * 12) + 12 }}px"
+        >
+          {%- if node.session_type == 'quiz' -%}🧪
+          {%- elif node.session_type == 'learn_more' -%}⚡
+          {%- elif node.session_type == 'news_discussion' -%}📰
+          {%- else -%}💬{%- endif -%}
+          <span class="truncate ml-0.5">{{ node.title or node.topic or 'Untitled' }}</span>
+        </button>
+        {% endfor %}
+      </div>
+
+      <!-- Right: content pane -->
+      <div class="flex-1 overflow-y-auto relative">
+        <!-- HTMX loading indicator -->
+        <div id="preview-spinner" class="htmx-indicator absolute inset-0 flex items-center justify-center bg-white/70 z-10 pointer-events-none">
+          <svg class="animate-spin w-6 h-6 text-indigo-500" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+        </div>
+        <div id="preview-content">
+          {% set content = preview.initial_content %}
+          {% include 'partials/share_session_preview.html' %}
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>

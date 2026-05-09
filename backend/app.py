@@ -56,6 +56,7 @@ def create_app(config_name: str | None = None) -> Flask:
     from backend.api.sessions.routes import bp as sessions_bp
     from backend.api.discuss.routes import bp as discuss_bp
     from backend.api.quiz.routes import bp as quiz_bp
+    from backend.api.wall.routes import bp as wall_bp
 
     app.register_blueprint(health_bp)
     app.register_blueprint(auth_bp)
@@ -65,6 +66,7 @@ def create_app(config_name: str | None = None) -> Flask:
     app.register_blueprint(sessions_bp)
     app.register_blueprint(discuss_bp)
     app.register_blueprint(quiz_bp)
+    app.register_blueprint(wall_bp)
 
     register_error_handlers(app)
 
