@@ -1,0 +1,121 @@
+{# partials/knowledge_tree_panel.html — right panel knowledge tree #}
+{# Variables: tree (list ordered root→deepest, each has depth_offset, is_current, session_type, title, topic, id) #}
+
+{# Pre-compute: for each node index, which ancestor depth levels still have a sibling below.
+   stored as "i_d" -> bool in ns.lines. This drives the vertical guide lines. #}
+{%- set ns = namespace(lines={}) -%}
+{% for node in tree %}
+  {%- set i = loop.index0 -%}
+  {% for d in range(node.depth_offset) %}
+    {%- set has_below = namespace(v=false) -%}
+    {% for future in tree[i+1:] %}
+      {%- if future.depth_offset <= d and not has_below.v -%}
+        {%- if future.depth_offset == d -%}{%- set has_below.v = true -%}{%- endif -%}
+      {%- endif -%}
+    {% endfor %}
+    {%- set _ = ns.lines.update({(i|string + '_' + d|string): has_below.v}) -%}
+  {% endfor %}
+{% endfor %}
+
+<div class="flex flex-col h-full">
+
+  {# ── Header ── #}
+  <div class="flex items-center justify-between px-3 py-2.5 border-b border-gray-200 bg-white flex-shrink-0">
+    <div class="flex items-center gap-2">
+      <svg class="w-4 h-4 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+      </svg>
+      <span class="text-sm font-semibold text-gray-700">Knowledge Tree</span>
+    </div>
+    <button
+      type="button"
+      hx-get="/news/partial?category=ai"
+      hx-target="#right-panel"
+      hx-swap="innerHTML"
+      class="text-xs text-indigo-500 hover:text-indigo-700 flex items-center gap-1 hover:underline"
+    >
+      <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+      </svg>
+      News
+    </button>
+  </div>
+
+  {# ── Tree nodes ── #}
+  <div class="flex-1 overflow-y-auto py-2 px-2">
+    {% if not tree %}
+    <div class="py-10 text-center text-gray-400 text-xs space-y-2">
+      <svg class="w-8 h-8 mx-auto opacity-25" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4"/>
+      </svg>
+      <p class="font-medium text-gray-500">No knowledge tree yet</p>
+      <p>Click Explore on a section to go deeper</p>
+    </div>
+    {% else %}
+    {% for node in tree %}
+    {%- set i = loop.index0 -%}
+    {%- set d = node.depth_offset -%}
+    {%- set is_root = (d == 0) -%}
+
+    <div class="flex items-center" style="min-height:30px;">
+
+      {# ── Guide columns: one per ancestor depth level ── #}
+      {% for lvl in range(d) %}
+      <div class="flex-shrink-0 relative" style="width:20px;align-self:stretch;">
+        {# Vertical guide line — shown when this ancestor level has more siblings below #}
+        {% if ns.lines.get(i|string + '_' + lvl|string, false) %}
+        <div class="absolute top-0 bottom-0 bg-gray-200" style="left:9px;width:1px;"></div>
+        {% endif %}
+      </div>
+      {% endfor %}
+
+      {# ── Elbow connector for non-root nodes ── #}
+      {% if not is_root %}
+      <div class="flex-shrink-0 relative" style="width:20px;align-self:stretch;">
+        {# Vertical half from top to centre #}
+        <div class="absolute top-0 bg-gray-200" style="left:9px;width:1px;height:50%;"></div>
+        {# Horizontal arm to the right #}
+        <div class="absolute bg-gray-200" style="left:9px;top:50%;width:11px;height:1px;"></div>
+      </div>
+      {% endif %}
+
+      {# ── Clickable node ── #}
+      <a
+        href="#"
+        hx-get="/sessions/{{ node.id }}/messages/partial"
+        hx-target="#chat-messages"
+        hx-swap="innerHTML"
+        hx-on::after-request="setActiveSession('{{ node.id }}')"
+        class="flex items-center gap-1.5 flex-1 min-w-0 px-2 py-1.5 rounded-lg text-xs
+               transition-colors
+               {% if node.is_current %}bg-indigo-50 border border-indigo-200 text-indigo-700 font-medium
+               {% elif is_root %}bg-gray-50 border border-gray-200 text-gray-700 font-medium hover:bg-gray-100
+               {% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-800{% endif %}"
+      >
+        <span class="flex-shrink-0 text-sm leading-none">
+          {%- if node.session_type == 'quiz' -%}🧪
+          {%- elif node.session_type == 'learn_more' -%}⚡
+          {%- elif node.session_type == 'news_discussion' -%}📰
+          {%- else -%}💬{%- endif -%}
+        </span>
+        <span class="truncate">{{ node.title or node.topic or 'Untitled' }}</span>
+        {% if node.is_current %}
+        <span class="flex-shrink-0 ml-auto w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
+        {% endif %}
+      </a>
+
+    </div>
+    {% endfor %}
+    {% endif %}
+  </div>
+
+  {# ── Footer ── #}
+  <div class="px-3 py-2 border-t border-gray-100 bg-white flex-shrink-0">
+    <p class="text-xs text-gray-400 text-center">
+      {% if tree %}{{ tree|length }} node{{ 's' if tree|length != 1 else '' }} · click to open{% else %}Click a node to open that thread{% endif %}
+    </p>
+  </div>
+
+</div>

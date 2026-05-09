@@ -1,0 +1,71 @@
+{# partials/fact_check_report.html — inline fact-check report for a news article #}
+{# Variables: report (dict), article_title (str) #}
+
+{% set verdict_classes = {
+  'verified': 'bg-green-50 border-green-200 text-green-800',
+  'mostly_verified': 'bg-emerald-50 border-emerald-200 text-emerald-800',
+  'disputed': 'bg-red-50 border-red-200 text-red-800',
+  'unverifiable': 'bg-gray-50 border-gray-200 text-gray-600'
+} %}
+{% set verdict_icons = {
+  'verified': '✓',
+  'mostly_verified': '✓',
+  'disputed': '✗',
+  'unverifiable': '?'
+} %}
+{% set claim_badge = {
+  'verified': 'bg-green-100 text-green-700',
+  'disputed': 'bg-red-100 text-red-700',
+  'unverifiable': 'bg-gray-100 text-gray-500'
+} %}
+
+<div class="mt-2 rounded-xl border p-3 text-xs space-y-2.5
+            {{ verdict_classes.get(report.overall_verdict, 'bg-gray-50 border-gray-200 text-gray-600') }}">
+
+  {# Header #}
+  <div class="flex items-center gap-2">
+    <span class="font-bold text-sm">
+      {{ verdict_icons.get(report.overall_verdict, '?') }}
+    </span>
+    <span class="font-semibold capitalize">
+      {{ report.overall_verdict.replace('_', ' ') if report.overall_verdict else 'Unknown' }}
+    </span>
+    <span class="ml-auto text-xs opacity-60">AI Fact Check</span>
+  </div>
+
+  {# Summary #}
+  {% if report.summary %}
+  <p class="leading-relaxed opacity-90">{{ report.summary }}</p>
+  {% endif %}
+
+  {# Claims #}
+  {% if report.claims %}
+  <div class="space-y-1.5 pt-1 border-t border-current border-opacity-20">
+    {% for claim in report.claims %}
+    <div class="bg-white bg-opacity-60 rounded-lg p-2 space-y-1">
+      <div class="flex items-start gap-1.5">
+        <span class="flex-shrink-0 px-1.5 py-0.5 rounded text-xs font-semibold
+                     {{ claim_badge.get(claim.verdict, 'bg-gray-100 text-gray-500') }}">
+          {{ claim.verdict }}
+        </span>
+        <p class="flex-1 font-medium leading-snug">{{ claim.claim }}</p>
+      </div>
+      {% if claim.evidence %}
+      <p class="text-gray-600 leading-relaxed pl-1">{{ claim.evidence }}</p>
+      {% endif %}
+      {% if claim.sources %}
+      <div class="flex flex-wrap gap-1 pl-1">
+        {% for url in claim.sources[:3] %}
+        <a href="{{ url }}" target="_blank" rel="noopener noreferrer"
+           class="inline-block text-xs text-indigo-600 hover:text-indigo-800 hover:underline truncate max-w-[160px]">
+          ↗ {{ url | replace('https://', '') | replace('http://', '') | truncate(30, True, '…') }}
+        </a>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+</div>

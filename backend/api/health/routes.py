@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from flask import Blueprint, jsonify
 
 from backend.core.db import get_pool

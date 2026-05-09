@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 import re
-from typing import Annotated
+try:
+    from typing import Annotated
+except ImportError:
+    from typing_extensions import Annotated  # type: ignore[assignment]
 from typing_extensions import TypedDict
 
 from langchain_core.messages import BaseMessage, SystemMessage
@@ -8,7 +13,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from backend.agent.prompts import SYSTEM_PROMPT
-from backend.agent.tools import get_latest_ai_news
+from backend.agent.tools import fetch_url, get_latest_ai_news
 from backend.core.llm import build_llm_client
 
 _EXPLORE_RE = re.compile(r"<explore>\s*(\{.*?\})\s*</explore>", re.DOTALL)
@@ -36,7 +41,7 @@ def _extract_topics(text: str) -> tuple[str, list[str]]:
 
 
 def build_graph() -> StateGraph:
-    tools = [get_latest_ai_news]
+    tools = [get_latest_ai_news, fetch_url]
     llm = build_llm_client(temperature=0.7).bind_tools(tools)
 
     def call_model(state: State) -> dict:
@@ -47,7 +52,7 @@ def build_graph() -> StateGraph:
         messages = [SystemMessage(content=system_content)] + list(state["messages"])
         response = llm.invoke(messages)
 
-        clean_text, topics = _extract_topics(response.content)
+        clean_text, topics = _extract_topics(str(response.content))
         response.content = clean_text
 
         return {

@@ -1,19 +1,20 @@
 # Knowledge Root — Architecture Document
 
-> **Scope:** Reshaping the existing AI chat agent into a full-featured tech-learning platform with authentication, chat history, smart news caching, and an adaptive knowledge-check system.
+> **Scope:** Reshaping the existing AI chat agent into a full-featured tech-learning platform with authentication, chat history, smart news caching, a multi-agent knowledge pipeline, and an adaptive knowledge-check system.
 >
-> **Baseline stack:** Flask · PostgreSQL · LangGraph · OpenRouter LLM · React + TypeScript + Vite · Docker Compose
+> **Baseline stack:** Flask · PostgreSQL · Redis · LangGraph (chat) · google-genai (fact-check, Gemini 2.0 Flash + Google Search grounding) · OpenRouter (DeepSeek) · fastembed (topic-news embeddings) · Jinja2 + HTMX + Alpine.js · Docker Compose
 
 ---
 
 ## 1. Product Vision
 
-A focused **AI-powered tech learning companion** where users can:
+A **news-anchored AI learning platform** where users can explore any topic — technology, science, history, economics, biology, politics — through structured, progressive AI-guided learning sessions triggered by real-world news.
 
 1. Register and log in with a personal account.
-2. Have persistent, named chat sessions with an AI tutor that specialises in AI/ML and software engineering.
-3. Glance at the latest AI news in a live right-side panel — without hammering news APIs on every page load.
-4. Test their own knowledge after any chat session through auto-generated technical MCQs derived from that conversation.
+2. Ask about **any topic** and receive a structured conceptual map covering every major pillar of that subject, ordered foundational → applied → advanced — so no important concept is missed.
+3. Click **Explore** on any news article across six categories (AI · Dev · World · Bio · Econ · Health) to extract the underlying concepts from current real-world events.
+4. Drill deeper into any concept via recursive **Learn More** sessions — each click goes one level deeper, building a personal knowledge tree.
+5. Test knowledge at any depth via adaptive MCQs derived from the full conversation ancestry, with per-question Relearn explanations and Follow-up quizzes targeting weak areas.
 
 ---
 
@@ -21,29 +22,29 @@ A focused **AI-powered tech learning companion** where users can:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                          Browser (React)                          │
+│                   Browser (HTMX + Alpine.js)                      │
 │                                                                    │
 │  ┌─────────────┐   ┌────────────────────────┐   ┌─────────────┐  │
 │  │  Left Pane  │   │     Chat Interface      │   │ Right Pane  │  │
 │  │  Chat List  │   │  (Tech Learning Chat)   │   │  AI News    │  │
-│  │             │   │  [Check Knowledge ▶]    │   │  Feed       │  │
+│  │  (HTMX)     │   │  [Check Knowledge ▶]    │   │  (HTMX)     │  │
 │  └─────────────┘   └────────────────────────┘   └─────────────┘  │
 │                                  │                                 │
 │                    ┌─────────────▼────────────┐                   │
 │                    │  Knowledge Check Tab      │                   │
-│                    │  (MCQ Interface)          │                   │
+│                    │  (MCQ Interface, HTMX)    │                   │
 │                    └──────────────────────────┘                   │
 └───────────────────────────┬──────────────────────────────────────┘
-                            │ HTTPS / REST + JSON
+                            │ HTTPS (full pages + HTMX partial requests)
 ┌───────────────────────────▼──────────────────────────────────────┐
-│                      Flask API (Python)                            │
+│             Flask (Python) — Jinja2 SSR + REST API                │
 │                                                                    │
-│  /auth/*     /sessions/*     /chat/*     /news     /quiz/*        │
+│  /pages/*    /auth/*    /sessions/*    /chat/*    /news    /quiz/*│
 └──────┬──────────────┬──────────────┬──────────────┬──────────────┘
        │              │              │              │
   ┌────▼────┐   ┌─────▼─────┐  ┌───▼───┐   ┌─────▼──────┐
   │  Auth   │   │  Session  │  │LangG- │   │   Redis    │
-  │  (JWT)  │   │  Manager  │  │raph   │   │   Cache    │
+  │(Session)│   │  Manager  │  │raph   │   │(Cache+Sess)│
   └────┬────┘   └─────┬─────┘  └───┬───┘   └─────┬──────┘
        │              │            │              │
   ┌────▼──────────────▼────────────▼──────────────▼──────┐
@@ -56,18 +57,20 @@ A focused **AI-powered tech learning companion** where users can:
 
 ## 3. Tech Stack
 
-| Layer         | Technology                            | Rationale                                                     |
-|---------------|---------------------------------------|---------------------------------------------------------------|
-| Frontend      | React 18 + TypeScript + Vite          | Existing; fast HMR, strong typing                             |
-| Routing       | React Router v6                       | SPA routing for auth pages and quiz tab                       |
-| Styling       | Tailwind CSS                          | Existing utility-first design system                          |
-| Backend       | Flask 3 (Python)                      | Existing; lightweight, familiar                               |
-| Auth          | JWT (PyJWT) + bcrypt                  | Stateless access tokens, secure password hashing              |
-| AI Chat       | LangGraph + OpenRouter                | Existing; graph-based agent with persistent checkpointing     |
-| MCQ Generation| OpenRouter LLM (separate call)        | Reuse existing LLM key; dedicated prompt chain                |
-| Cache         | Redis 7                               | Sub-millisecond reads; TTL-native; separates fast-path state  |
-| Database      | PostgreSQL 16                         | Existing; adds user, session, and quiz tables                 |
-| Container     | Docker Compose                        | Existing; add Redis service                                   |
+| Layer         | Technology                            | Rationale                                                               |
+|---------------|---------------------------------------|-------------------------------------------------------------------------|
+| Templates     | Jinja2 (Flask built-in)               | Server-side rendering; no npm, no build step, no separate process       |
+| Interactivity | HTMX                                  | Partial page updates via HTML-over-the-wire; loaded from CDN            |
+| Client state  | Alpine.js (CDN)                       | Lightweight reactivity for toggles, tabs, dropdowns — no framework      |
+| Styling       | Tailwind CSS (CDN)                    | Utility-first CSS; CDN removes all Node.js/npm from the stack           |
+| Backend       | Flask 3 (Python)                      | Serves both Jinja2 pages and REST/HTMX partial responses                |
+| Validation    | Pydantic v2                           | Request schema validation at the HTTP boundary; `@model_validator` for cross-field rules |
+| Auth          | Flask-Session + Redis + bcrypt        | Server-side sessions stored in Redis; signed cookie; simpler than JWT for SSR |
+| AI Chat       | LangGraph + OpenRouter                | Existing; graph-based agent with persistent checkpointing               |
+| MCQ Generation| OpenRouter LLM (separate call)        | Reuse existing LLM key; dedicated prompt chain                          |
+| Cache/Session | Redis 7                               | Shared for news cache (day/hour TTL) and Flask-Session storage          |
+| Database      | PostgreSQL 16                         | Existing; adds user, session, and quiz tables                           |
+| Container     | Docker Compose                        | Single web service — no separate frontend container required            |
 
 ---
 
@@ -84,10 +87,17 @@ ai-agent/
 │   ├── config.py                       ← Config / DevelopmentConfig / ProductionConfig / TestingConfig
 │   ├── extensions.py                   ← db_pool, redis_client, limiter, scheduler — single instances
 │   │
+│   ├── domain/                         ← Pure Python domain models — no Flask, no DB, no business logic
+│   │   └── user.py                     ← User frozen dataclass + to_profile() method
+│   │
+│   ├── repositories/                   ← All SQL encapsulated here; returns domain objects
+│   │   └── user_repository.py          ← UserRepository class + module-level user_repo singleton
+│   │
 │   ├── api/                            ← One sub-package per API domain; each has its own Blueprint
 │   │   ├── auth/
 │   │   │   ├── routes.py               ← Blueprint('/auth') — thin handlers, no business logic
-│   │   │   └── service.py              ← register_user(), login_user(), refresh_token(), logout()
+│   │   │   ├── schemas.py              ← Pydantic v2 request schemas: RegisterRequest, LoginRequest
+│   │   │   └── service.py              ← register_user(), login_user(), get_user()
 │   │   ├── sessions/
 │   │   │   ├── routes.py
 │   │   │   └── service.py              ← create_session(), list_sessions(), rename(), delete(), get_messages()
@@ -96,9 +106,11 @@ ai-agent/
 │   │   │   └── service.py              ← send_message(), auto_title(), extract_suggested_topics()
 │   │   ├── news/
 │   │   │   ├── routes.py
-│   │   │   ├── service.py              ← get_news(category, force) — orchestrates cache + RSS
-│   │   │   ├── cache.py                ← Redis day/hour cache, DB fallback, promote_hour_to_day()
-│   │   │   └── feeds.py                ← NEWS_FEEDS dict keyed by 'ai' | 'programming' | 'political'
+│   │   │   ├── service.py              ← get_news(category) / get_topic_news(topic) — orchestrates cache + RSS
+│   │   │   ├── cache.py                ← Redis day/hour cache; fetch_topic_news() embedding pipeline; refresh_article_embeddings()
+│   │   │   ├── embeddings.py           ← all-MiniLM-L6-v2 loader; embed_articles(); weighted_scores(); adaptive_threshold(); mmr_rerank()
+│   │   │   ├── service.py              ← get_news(category) / get_topic_news(topic) — orchestrates cache + RSS; _infer_category() fallback
+│   │   │   └── feeds.py                ← NEWS_FEEDS dict keyed by 'ai' | 'programming' | 'political' | 'biology' | 'economy' | 'health'
 │   │   ├── discuss/
 │   │   │   ├── routes.py
 │   │   │   └── service.py              ← news_discuss(), create_learn_more_session(), get_tree()
@@ -121,10 +133,43 @@ ai-agent/
 │   │
 │   └── migrations/                     ← Idempotent SQL DDL, run in order at startup
 │       ├── 001_users.sql
-│       ├── 002_chat_sessions.sql
+│       ├── 002_chat_sessions.sql       ← sessions table + full hierarchy columns
 │       ├── 003_news_cache.sql
-│       ├── 004_mcq_attempts.sql
-│       └── 005_session_hierarchy.sql
+│       ├── 004_mcq_attempts.sql        ← includes scope_sessions + relearn_cache columns
+│       ├── 005_session_messages.sql
+│       ├── 006_cascade_fk.sql
+│       ├── 007_quiz_session.sql        ← adds linked_attempt_id to chat_sessions
+│       └── 008_source_category.sql     ← adds source_category to chat_sessions (news-tab origin for topic-news fallback)
+│
+├── backend/templates/                  ← Jinja2 HTML templates (served by Flask directly)
+│   ├── base.html                       ← HTML shell: head with CDN links, nav, flash messages
+│   ├── auth/
+│   │   ├── login.html
+│   │   └── register.html
+│   ├── app/
+│   │   └── index.html                  ← 3-pane layout (sidebar + chat + news)
+│   ├── learn/
+│   │   └── session.html                ← Learning tab (sidebar + chat + knowledge tree)
+│   ├── quiz/
+│   │   └── attempt.html
+│   └── partials/                       ← HTMX partial responses (HTML fragments)
+│       ├── session_list.html           ← Sidebar session tree with hierarchy + green-dot indicator
+│       ├── message.html                ← Single chat message bubble
+│       ├── messages.html               ← Full message history list (session replay)
+│       ├── sectioned_message.html      ← Sectioned AI response (Explore / Learn More)
+│       ├── news_panel.html             ← 6-tab news panel (AI / Dev / World / Bio / Econ / Health)
+│       ├── topic_news_panel.html       ← Topic-filtered news articles partial
+│       ├── knowledge_tree.html         ← Knowledge tree node list
+│       ├── knowledge_tree_panel.html   ← Right-pane knowledge tree wrapper
+│       ├── quiz_section.html           ← Per-section inline quiz cards
+│       ├── quiz_inline.html            ← Full inline quiz loaded into #chat-messages
+│       └── fact_check_report.html      ← Gemini fact-check verdict card
+│
+├── backend/static/                     ← Served at /static/ — minimal custom JS only
+│   ├── app.js                          ← Alpine appState() + all HTMX event wiring
+│   ├── quiz.js                         ← quizState() / quizStateInline() Alpine components
+│   ├── auth.js                         ← Login/register page helpers
+│   └── toast.js                        ← Lightweight toast notification helper
 │
 ├── tests/                              ← pytest — at project root, imports from backend.*
 │   ├── conftest.py                     ← app fixture (TestingConfig), test DB, fakeredis, auth helpers
@@ -136,7 +181,6 @@ ai-agent/
 │       ├── test_discuss.py
 │       └── test_quiz.py
 │
-├── frontend/                           ← React 18 + TypeScript (Vite)
 ├── e2e/                                ← Playwright E2E specs
 ├── docs/                               ← Architecture, implementation plan, progress tracker
 ├── .claude/agents/platform-dev.md     ← Claude Code sub-agent for this project
@@ -147,11 +191,14 @@ ai-agent/
 
 | File | Owns | Must NOT contain |
 |------|------|-----------------|
-| `backend/api/*/routes.py` | HTTP parsing, input validation, response serialisation | SQL, LLM calls, Redis ops, business logic |
-| `backend/api/*/service.py` | Business logic, DB queries, orchestration | `request`, `g` (accepts `user_id` as parameter) |
+| `backend/domain/*.py` | Immutable data models (`@dataclass(frozen=True)`), `to_*()`  serialisation helpers | Flask imports, SQL, business logic |
+| `backend/repositories/*.py` | All SQL for a domain; returns domain objects | `request`, `g`, business logic, LLM calls |
+| `backend/api/*/schemas.py` | Pydantic request validation at the HTTP boundary | SQL, Redis ops, domain logic |
+| `backend/api/*/routes.py` | HTTP parsing, schema validation via `_parse()`, response serialisation | SQL, LLM calls, Redis ops, business logic |
+| `backend/api/*/service.py` | Business logic, orchestration; calls repositories | `request`, `g` (accepts `user_id` as parameter); no raw SQL |
 | `backend/agent/graph.py` | LangGraph graph only | Route code, DB queries |
 | `backend/agent/prompts.py` | Prompt string constants | Any logic |
-| `backend/core/auth.py` | `@require_auth` decorator | Business logic beyond token validation |
+| `backend/core/auth.py` | `@require_auth` / `@require_api_auth` decorators; sets `g.user_id` from session | Business logic beyond session validation |
 | `backend/core/db.py` | Connection pool helpers | Domain logic |
 | `backend/core/llm.py` | LLM client factory | Prompt strings (those live in prompts.py) |
 | `backend/migrations/*.sql` | DDL (CREATE/ALTER/INDEX) | DML (INSERT/UPDATE/DELETE) |
@@ -177,18 +224,29 @@ CREATE TABLE users (
 ### 4.2 `chat_sessions`
 ```sql
 CREATE TABLE chat_sessions (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         UUID REFERENCES users(id) ON DELETE CASCADE,
-    thread_id       VARCHAR(255) UNIQUE NOT NULL,   -- LangGraph thread_id
-    title           VARCHAR(255),                   -- NULL = auto-generate from content
-    created_at      TIMESTAMPTZ DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ DEFAULT NOW(),
-    last_message_at TIMESTAMPTZ DEFAULT NOW()
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id           UUID REFERENCES users(id) ON DELETE CASCADE,
+    thread_id         VARCHAR(255) UNIQUE NOT NULL DEFAULT gen_random_uuid()::text,
+    title             VARCHAR(255),                   -- NULL = auto-generate from content
+    session_type      VARCHAR(20) NOT NULL DEFAULT 'regular',
+    parent_session_id UUID REFERENCES chat_sessions(id),
+    root_session_id   UUID REFERENCES chat_sessions(id),
+    depth_level       INTEGER NOT NULL DEFAULT 0,
+    topic             VARCHAR(500),
+    news_article_id   VARCHAR(20),
+    linked_attempt_id UUID,                          -- points to mcq_attempts row for quiz sessions
+    source_category   VARCHAR(20),                   -- news tab origin ('health','economy',…) for topic-news fallback
+    created_at        TIMESTAMPTZ DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ DEFAULT NOW(),
+    last_message_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_chat_sessions_user_id ON chat_sessions(user_id);
-CREATE INDEX idx_chat_sessions_last_message ON chat_sessions(user_id, last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_last ON chat_sessions(user_id, last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_parent    ON chat_sessions(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_root      ON chat_sessions(root_session_id);
 ```
+
+`linked_attempt_id` links a quiz-type session (created by "Check Knowledge") to its corresponding `mcq_attempts` row, enabling direct navigation from sidebar to a specific quiz attempt.
 
 ### 4.3 `mcq_attempts`
 ```sql
@@ -220,9 +278,11 @@ CREATE TABLE news_cache (
 
 ## 5. Authentication
 
+Authentication uses **server-side session cookies** via Flask-Session backed by Redis. No JWT issuance, no refresh token rotation — the session stores the user ID directly in Redis; the browser receives only a signed session ID cookie.
+
 ### 5.1 Registration — `POST /auth/register`
 
-**Request body:**
+**Request (HTML form or JSON):**
 ```json
 {
   "full_name": "Alice Smith",
@@ -234,14 +294,15 @@ CREATE TABLE news_cache (
 ```
 
 **Server logic:**
-1. Validate all fields (username: 3–50 chars, alphanumeric+underscore; email: RFC 5322; phone: E.164; password: min 8 chars, at least one number).
+1. Validate all fields (username: 3–50 chars, alphanumeric+underscore; email: RFC 5322; phone: E.164 optional; password: min 8 chars, at least one digit).
 2. Hash password with `bcrypt` (cost factor 12).
 3. Insert into `users`.
-4. Return `201` with the user profile (no password hash).
+4. `session['user_id'] = str(user['id'])`, `session.permanent = True`.
+5. On success: redirect to `/app` (PRG pattern). On HTMX request, return `HX-Redirect: /app` header. On failure: re-render form with error context, or return HTML error fragment.
 
 ### 5.2 Login — `POST /auth/login`
 
-**Request body:**
+**Request (HTML form or JSON):**
 ```json
 { "identifier": "alicesmith",  "password": "••••••••" }
 ```
@@ -249,17 +310,57 @@ CREATE TABLE news_cache (
 
 **Server logic:**
 1. Look up user by username OR email.
-2. `bcrypt.checkpw(password, hash)`.
-3. Issue **access token** (JWT, 15 min expiry) and **refresh token** (JWT, 7 days expiry).
-4. Return access token in JSON body; set refresh token as `HttpOnly; SameSite=Strict` cookie.
+2. `bcrypt.checkpw(password, hash)` — constant-time comparison.
+3. `session['user_id'] = str(user['id'])`, `session.permanent = True`.
+4. Redirect to `/app`. On failure: re-render login template with error message.
 
-### 5.3 Token Refresh — `POST /auth/refresh`
+### 5.3 Logout — `POST /auth/logout`
 
-Uses the HttpOnly refresh cookie; returns a new access token. Refresh tokens are single-use (rotation); old token is invalidated in a `refresh_tokens` blocklist stored in Redis.
+`session.clear()` — this deletes the session data from Redis. Redirect to `/login`.
 
-### 5.4 Middleware
+### 5.4 Session Storage (Flask-Session + Redis)
 
-Every protected route checks the `Authorization: Bearer <token>` header. The decoded `sub` (user UUID) is injected into `flask.g.user_id` for downstream handlers.
+```python
+# backend/config.py
+SESSION_TYPE = 'redis'               # stored in Redis, not in the cookie
+SESSION_COOKIE_NAME = 'knroot_sess'
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_SECURE = True         # False in development
+PERMANENT_SESSION_LIFETIME = timedelta(days=7)
+SESSION_USE_SIGNER = True            # HMAC-sign the session ID
+SESSION_REFRESH_EACH_REQUEST = True  # renew TTL on every request
+```
+
+The cookie contains only a signed session ID. The payload (`user_id`) lives in Redis under key `session:<id>`. Session expiry is enforced by Redis TTL.
+
+### 5.5 Auth Middleware (`backend/core/auth.py`)
+
+Two decorators — one for page routes (redirects), one for HTMX/API endpoints (returns 401):
+
+```python
+def require_auth(f):
+    """Page routes — redirects to /login if unauthenticated."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('pages.login'))
+        g.user_id = session['user_id']
+        return f(*args, **kwargs)
+    return decorated
+
+def require_api_auth(f):
+    """HTMX/JSON endpoints — returns 401 JSON if unauthenticated."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({"error": "Unauthorized"}), 401
+        g.user_id = session['user_id']
+        return f(*args, **kwargs)
+    return decorated
+```
+
+`g.user_id` is set exclusively from the server-side session — never from client-supplied request data.
 
 ---
 
@@ -305,7 +406,71 @@ redis.set(day_key, day_articles, ex=ttl_until_midnight())
 db.upsert(day_key, day_articles)
 ```
 
-### 6.2 Article Data Shape
+### 6.2 Topic-Specific News Cache
+
+When a user is inside a chat session, the right-pane news panel shows articles semantically relevant to the session topic. Two Redis cache layers keep the hot path fast:
+
+```
+Redis keys:
+  news:article_embeddings:{model}:{version}      TTL: 1 h   — pre-computed title+summary embeddings for all articles
+  news:category_embeddings:{model}:{version}     TTL: 24 h  — one embedding per category label (zero-shot routing)
+  news:topic:{sha256(topic)[:10]}:{hours}        TTL: 30 min (hit) / 10 min (miss) — scored+ranked result list
+```
+
+**Embedding store** (`news:article_embeddings:…`) is written by the APScheduler `_refresh_all` job each time category feeds are refreshed (every ~1.5 h). Each entry is a full article dict with two extra fields:
+- `title_emb`: list[float] — L2-normalised 384-dim embedding of the title
+- `summary_emb`: list[float] — L2-normalised 384-dim embedding of the summary
+
+**Topic result cache** (`news:topic:…`) is written by `service.py`'s `get_topic_news()` after the first query for a topic. Subsequent requests within the TTL window are served from this cache (~5 ms) — no feed fetch, no embedding.
+
+Served via `GET /news/topic-partial?topic=<text>&session_id=<id>`. When topic search returns no results, the fallback chain is:
+
+1. **`source_category`** (stored on `chat_sessions` at session creation) — used for `news_discussion` and `learn_more` sessions. The originating tab category is a known fact; no inference needed.
+2. **Embedding-based category routing** — used for `regular` sessions. The topic is embedded and compared against pre-computed `CATEGORY_LABELS` embeddings (one per category, 24 h Redis TTL). The closest category is selected via cosine similarity — zero-shot classification, no hardcoded keywords.
+
+**`_age_hours` handling:** `_age_hours` is re-computed from the stored `published` timestamp each time embeddings are loaded from Redis, so values do not grow stale between the embed job and the query. The field is stripped before writing to the topic result cache (both in `cache.py`'s `set_cache()` and in `service.py`'s `get_topic_news()`).
+
+### 6.3 Topic-News Ranking Pipeline
+
+`fetch_topic_news()` in `backend/api/news/cache.py` runs a multi-stage pipeline on every cache miss:
+
+```
+Redis hit?
+  ├── YES → load articles_with_embs (pre-computed)
+  └── NO  → fetch ALL_FEEDS → embed_articles() (fallback, slower)
+        │
+        ▼
+  Re-compute _age_hours from published timestamp
+        │
+        ▼
+  Filter to requested age window (default 7 d; relax to 30 d if empty)
+        │
+        ▼
+  Embed topic (1 vector, ~2 ms)
+        │
+        ▼
+  Weighted cosine similarity per article
+    score = 0.7 × cos_sim(topic, title_emb)
+          + 0.3 × cos_sim(topic, summary_emb)
+        │
+        ▼
+  Adaptive threshold = max(0.15, top_score × 0.6)
+        │
+        ▼
+  Maximal Marginal Relevance re-ranking (λ = 0.6)
+  → top-15 articles, semantically diverse
+        │
+        ▼
+  Strip embedding vectors before returning
+```
+
+**Why each stage:**
+- **Weighted scoring** — titles are denser signal than summaries (boilerplate, datelines). `0.7 / 0.3` split reflects this.
+- **Adaptive threshold** — a fixed threshold fails for niche topics (nothing passes) or very broad queries (everything passes). Scaling with `top_score × 0.6` adapts automatically.
+- **MMR re-ranking** — prevents 15 articles from the same source or sub-angle. MMR iteratively picks the next article that maximises `λ × relevance − (1−λ) × max_similarity_to_already_selected`.
+- **Keyword fallback** — if `fastembed` fails to load (first deploy before model download, OOM), the old keyword-scoring path runs silently. No crash, slightly less accurate.
+
+### 6.3 Article Data Shape
 
 ```json
 {
@@ -376,27 +541,35 @@ The `user_id` is extracted from the JWT, not from the request body.
 
 ### 8.1 Flow
 
+The quiz loads **inline** into the centre chat pane (`#chat-messages`) — no new tab is opened.
+
 ```
-Chat Page                   New Tab (Quiz Page)
-    │                              │
-    │  Click [Check Knowledge]     │
-    ├──────────────────────────────►
-    │  POST /quiz/generate         │
-    │  {session_id}                │
-    │                              │ Spinner while generating
-    │                              │ Receive questions JSON
-    │                              │ Render MCQ cards
-    │                              │ User answers
-    │                              │
-    │                              │ Auto-save on each answer
-    │                              │ PUT /quiz/attempt/{id}
-    │                              │
-    │                              │ Submit → score displayed
-    │                              │ PUT /quiz/attempt/{id} (completed_at set)
-    │                              │
-    │                              │ [Retry] → reset selections,
-    │                              │  same questions, new attempt row
+Chat Pane (#chat-messages)
+    │
+    │  Click [🧠 Check Knowledge]  — button disabled while any content is loading
+    │  POST /quiz/generate {session_id}
+    │  ← {attempt_id, questions, quiz_session_id}
+    │
+    │  HTMX GET /quiz/{attempt_id}/partial → loads quiz_inline.html into #chat-messages
+    │
+    │  User answers MCQ cards
+    │  Auto-save: PUT /quiz/attempt/{id} {answers}  (debounced 500ms)
+    │
+    │  Submit → PUT /quiz/attempt/{id} {answers, completed: true}
+    │  ← {score, questions with correct fields}
+    │  Score banner displayed inline
+    │
+    │  [Retry] → POST /quiz/retry → HTMX reloads fresh quiz inline
+    │
+    │  [🧠 Follow-up Quiz]  (shown after a quiz is submitted)
+    │  POST /quiz/generate-followup {attempt_id}
+    │  ← new attempt focusing on wrong answers from previous attempt
+    │  HTMX GET /quiz/{new_attempt_id}/partial → loads new inline quiz
 ```
+
+**Button disable rules:**
+- `[🧠 Check Knowledge]` / `[🧠 Follow-up Quiz]` is disabled whenever `chatLoading`, `contentBusy`, or a quiz is currently loaded but not yet submitted (`quizViewState && !quizViewState.submitted`).
+- Tooltip shows "Submit the quiz first" when blocked by an unsubmitted quiz.
 
 ### 8.2 MCQ Generation — `POST /quiz/generate`
 
@@ -481,138 +654,236 @@ Conversation:
 
 ### 8.5 Retry
 
-- User clicks **[Retry]**: frontend calls `POST /quiz/retry` with `{ "session_id": "..." }`.
+- User clicks **[Retry]**: frontend calls `POST /quiz/retry` with `{ "attempt_id": "..." }`.
 - Backend creates a **new `mcq_attempts` row** with the same questions (no re-generation cost) and resets answers/score.
-- Returns the new `attempt_id`; frontend resets all selections.
+- Returns the new `attempt_id`; HTMX reloads the inline quiz partial.
 - Previous attempt is preserved — users can review old scores via `GET /quiz/attempts?session_id=...`.
+
+### 8.6 Follow-up Quiz
+
+After a quiz is submitted, the **[🧠 Follow-up Quiz]** button becomes available:
+
+- Frontend calls `POST /quiz/generate-followup` with `{ "attempt_id": "..." }`.
+- Backend builds an attempt summary listing each question, the user's answer, and the correct answer.
+- Calls the LLM with `MCQ_FOLLOWUP_PROMPT` which instructs it to:
+  - Prioritise concepts the user answered **wrong** — probe them at a deeper level.
+  - For correctly-answered concepts, test related or adjacent ideas.
+  - Generate exactly 8 new questions; no question text may be reused verbatim.
+- Creates a new sibling `chat_session` (under the same parent content session) with title `"Quiz: … (follow-up)"` and a new `mcq_attempts` row.
+- Returns `{attempt_id, quiz_session_id, questions, session_id}`; HTMX loads the new inline quiz.
+
+**`MCQ_FOLLOWUP_PROMPT`** lives in `backend/agent/prompts.py`. The follow-up generator (`generate_mcq_followup()`) lives in `backend/api/quiz/generator.py` and uses the same retry-twice validation pattern as `generate_mcq()`.
 
 ---
 
 ## 9. Frontend Architecture
 
-### 9.1 Page / Route Map
+Flask serves all HTML pages through Jinja2 templates. Dynamic interactions use HTMX for partial page replacements without full reloads. Client-side reactivity (toggles, tabs, dropdowns) uses Alpine.js. Tailwind CSS is loaded from CDN. No Node.js, npm, or build step required.
+
+### 9.1 Page / Route Map (`backend/api/pages/routes.py`)
 
 ```
-/                  → redirect to /login or /app based on auth
-/login             → Login page
-/register          → Registration page
-/app               → Main 3-pane layout (protected)
-/app/session/:id   → Auto-select specific session in left pane
-/quiz/:attemptId   → Knowledge Check tab (opens in new tab)
+GET /                   → redirect to /app if session active, else /login
+GET /login              → render auth/login.html
+GET /register           → render auth/register.html
+GET /app                → render app/index.html  [require_auth]
+GET /app/session/<id>   → render app/index.html, preload session  [require_auth]
+GET /learn/<id>         → render learn/session.html  [require_auth]
+GET /quiz/<id>          → render quiz/attempt.html  [require_auth]
 ```
 
 ### 9.2 Three-Pane Layout
 
+The left and right panes are **user-resizable** via drag handles. Alpine.js tracks `sidebarWidth` and `rightPanelWidth` with pixel values; CSS transitions animate open/close.
+
 ```
-┌──────────────┬────────────────────────────┬──────────────┐
-│  LEFT PANE   │       CENTRE PANE          │  RIGHT PANE  │
-│  240px fixed │  flex-1, min-w-0           │  320px fixed │
-│              │                            │              │
-│ ● New Chat   │  ┌──────────────────────┐  │  AI News     │
-│              │  │   Message Thread     │  │              │
-│ Today        │  │                      │  │  [HuggingFace│
-│ ├ LoRA fine- │  │  User: What is ...   │  │   Blog]      │
-│ │  tuning..  │  │  AI: ...             │  │  Introducing │
-│ ├ Docker net │  │                      │  │  SmolVLM     │
-│              │  └──────────────────────┘  │  > ...       │
-│ Yesterday    │                            │              │
-│ ├ Attention  │  ┌──────────────────────┐  │  [ArXiv ML]  │
-│   mechanisms │  │   Input Bar          │  │  Flash Att.  │
-│              │  └──────────────────────┘  │  3.0         │
-│              │                            │              │
-│              │  [Check Knowledge ▶]       │              │
-└──────────────┴────────────────────────────┴──────────────┘
+┌──────────────┬──┬───────────────────────────┬──┬──────────────┐
+│  LEFT PANE   │▌ │       CENTRE PANE         │▌ │  RIGHT PANE  │
+│  resizable   │  │  flex-1, min-w-0          │  │  resizable   │
+│              │  │                           │  │              │
+│ ● New Chat   │  │  Message thread           │  │  AI News     │
+│              │  │  (HTMX beforeend swap     │  │  (HTMX load  │
+│ Session list │  │   on chat submit)         │  │   on mount)  │
+│ (HTMX load)  │  │                           │  │              │
+│              │  │  Inline quiz in           │  │  Tab group:  │
+│ Green dot on │  │  #chat-messages when      │  │  AI / Dev /  │
+│ active thread│  │  "Check Knowledge"        │  │  World       │
+│ (bubbles to  │  │  is clicked               │  │  (Alpine.js) │
+│  parent when │  │                           │  │              │
+│  collapsed)  │  │  [🧠 Check Knowledge]     │  │  Loading     │
+│              │  │  (disabled during loads)  │  │  overlay     │
+└──────────────┴──┴───────────────────────────┴──┴──────────────┘
+           resize handles
 ```
 
-**Left pane** — `ChatSidebar`:
+**Left pane** — `partials/session_list.html` (HTMX-loaded):
 - Groups sessions by: Today / Yesterday / This Week / Older.
-- Session item: `title` (auto or user-set) + relative timestamp.
-- Long-press or right-click → rename / delete.
-- Skeleton loaders while fetching.
+- Session item: title (auto or user-set) + relative timestamp.
+- Hierarchical: `news_discussion` roots are collapsible; `learn_more` children indented.
+- **Green dot active indicator**: a `.knr-dot` `<span>` inside each session row `<a data-session-id="...">`. `window._reapplyActiveDot()` highlights the active row. When a parent is collapsed and the active session is a hidden descendant, the dot appears on the nearest visible ancestor row (softer shade). Triggered by `setActiveSession()`, HTMX `afterSettle` on `#session-list`, and collapse-toggle clicks.
+- Skeleton placeholder rendered server-side while loading.
 
-**Centre pane** — `ChatInterface`:
-- Existing `MessageList` + `InputBar`.
-- "Check Knowledge" button appears below `InputBar` once there are ≥ 3 AI responses in the session.
-- Button opens `/quiz/:attemptId` in `window.open('...', '_blank')`.
+**Centre pane** — messages + input bar:
+- `[🧠 Check Knowledge]` strip shown only when a session is active (`x-show="activeSessionId"`).
+- Quiz loads **inline** into `#chat-messages` (no new tab).
+- Button label toggles: "🧠 Check Knowledge" → "🧠 Follow-up Quiz" after a quiz is submitted.
+- Button disabled via `:disabled="quizLoading || chatLoading || contentBusy || (quizViewState && !quizViewState.submitted)"`.
+- **`contentBusy`** — single Alpine boolean set `true` during content-loading operations that occupy the centre pane (chat send, quiz generation, section Explore, section quiz, sidebar session switch, learn-more creation). Both Send and Check Knowledge buttons bind to it. News card Explore (`discussArticle()`) intentionally does **not** set `contentBusy` — the session is created in the background and appears in the sidebar without interrupting the current chat view.
 
-**Right pane** — `NewsPanel`:
-- Grouped by source.
-- Timestamp badge shows article age (e.g. "2h ago").
-- Pull-to-refresh / manual refresh button triggers `GET /news?force=true`.
-- Skeleton loaders on first load.
+**Right pane** — `partials/news_panel.html` (HTMX-loaded):
+- News tab group controlled by Alpine.js `x-data`.
+- Each tab triggers `hx-get=/news/partial?category=<tab>` on activate.
+- **Loading overlay**: absolutely-positioned spinner (`z-20`, `x-show="newsPanelLoading"`) covers the right pane while news is fetching, leaving existing content visible underneath.
 
-### 9.3 Knowledge Check Tab (`/quiz/:attemptId`)
+### 9.3 HTMX Interaction Patterns
 
+**Login/Register (Post → Redirect → Get):**
+```html
+<form hx-post="/auth/login" hx-target="#form-error" hx-swap="innerHTML">
+  ...
+</form>
 ```
-┌──────────────────────────────────────────────────────┐
-│  Knowledge Check  ·  LoRA fine-tuning on LLaMA 3     │
-│                              Score: —/8  [Submit]    │
-├──────────────────────────────────────────────────────┤
-│  Q1. Which technique reduces trainable parameters... │
-│                                                       │
-│  ○ A  Full fine-tuning                               │
-│  ● B  Low-Rank Adaptation (LoRA)    ← selected       │
-│  ○ C  Prefix tuning                                   │
-│  ○ D  Prompt tuning                                   │
-│                                                       │
-│  Q2. ...                                              │
-│  ...                                                  │
-├──────────────────────────────────────────────────────┤
-│  [Retry]                          [Back to Chat]     │
-└──────────────────────────────────────────────────────┘
+Success: server returns `HX-Redirect: /app` header → browser navigates.
+Failure: server returns HTML error fragment → HTMX swaps into `#form-error`.
+
+**Chat submission:**
+```html
+<form hx-post="/chat" hx-target="#messages" hx-swap="beforeend"
+      hx-on::after-request="this.reset()">
+  <input type="hidden" name="session_id" value="{{ session_id }}">
+  <textarea name="message" required></textarea>
+  <button type="submit">Send</button>
+</form>
+```
+`POST /chat` returns a rendered `partials/message.html` fragment containing both the user message and the AI response.
+
+**Quiz MCQ auto-save:**
+```html
+<input type="radio" name="q_01" value="1"
+       hx-post="/quiz/attempt/{{ attempt_id }}/answer"
+       hx-vals='{"question_id": "q_01", "option": 1}'
+       hx-trigger="change">
 ```
 
-After submit:
-- Correct answers turn green, wrong selections turn red with the correct option highlighted.
-- Score badge updates: `Score: 6/8`.
-- `[Retry]` resets selections; questions are the same.
+### 9.4 Alpine.js for Client State
 
-### 9.4 State Management
+```html
+<!-- Show/hide password -->
+<div x-data="{ show: false }">
+  <input :type="show ? 'text' : 'password'" name="password">
+  <button @click="show = !show" type="button" :aria-label="show ? 'Hide' : 'Show'">
+    <span x-text="show ? 'Hide' : 'Show'"></span>
+  </button>
+</div>
 
-| Concern              | Solution                                              |
-|----------------------|-------------------------------------------------------|
-| Auth tokens          | `useAuthStore` (Zustand) + `localStorage` for access  |
-| Refresh token        | HttpOnly cookie (browser manages automatically)        |
-| Session list         | React Query (auto refetch on window focus)             |
-| Active chat messages | React Query keyed by `session_id`                     |
-| News                 | React Query, `staleTime: 60_000` (1 min client-side)  |
-| Quiz state           | Local component state + auto-save effect               |
+<!-- News tab group -->
+<div x-data="{ tab: 'ai' }">
+  <button @click="tab = 'ai'" :class="{'active': tab === 'ai'}">AI</button>
+  <button @click="tab = 'programming'" :class="{'active': tab === 'programming'}">Programming</button>
+  <div x-show="tab === 'ai'"
+       hx-get="/news/partial?category=ai" hx-trigger="intersect once"></div>
+  <div x-show="tab === 'programming'"
+       hx-get="/news/partial?category=programming" hx-trigger="intersect once"></div>
+</div>
+```
+
+### 9.5 State Management
+
+| Concern                  | Solution                                                              |
+|--------------------------|-----------------------------------------------------------------------|
+| Auth / current user      | Flask session (server-side, Redis-backed cookie)                      |
+| Session list             | HTMX loads `/sessions/partial` on mount + `sessionListRefresh` event  |
+| Active chat messages     | HTMX loads `/sessions/<id>/messages/partial` on select                |
+| News content             | HTMX loads `/news/partial?category=<tab>` on tab activate             |
+| Active news tab          | Alpine.js `x-data` local state                                        |
+| Active session highlight | `window._activeSessionId` + `window._reapplyActiveDot()` DOM function |
+| Content loading lock     | Alpine `contentBusy` boolean — set by HTMX body listeners + JS calls  |
+| News panel loading       | Alpine `newsPanelLoading` boolean — overlay spinner in right pane      |
+| Quiz inline state        | `window.dispatchEvent(CustomEvent('quiz-view-changed'))` from `quiz.js` → `appState.quizViewState` |
+| Quiz answers             | Alpine state in `quizState()` component; auto-saved to DB via `PUT /quiz/attempt/{id}` |
+| Pane widths              | Alpine `sidebarWidth` / `rightPanelWidth` — mousedown drag handlers    |
+| UI state                 | Alpine.js `x-data` per component (toggles, dropdowns)                 |
+
+**`quizViewState` event flow:** `quiz.js`'s `quizState()` component dispatches `quiz-view-changed` on `init()` and after `submitQuiz()`. `appState().init()` listens for this event and stores `{isQuiz, attemptId, quizSessionId, parentSessionId, submitted, score}` in `quizViewState`. The `htmx:afterSettle` handler clears `quizViewState` when `#chat-messages` no longer contains a `.knr-quiz-root` element.
 
 ---
 
 ## 10. API Surface
 
-| Method | Path                           | Auth | Description                              |
-|--------|--------------------------------|------|------------------------------------------|
-| POST   | `/auth/register`               | —    | Register new user                        |
-| POST   | `/auth/login`                  | —    | Login, receive JWT + refresh cookie      |
-| POST   | `/auth/refresh`                | —    | Rotate refresh token, return new access  |
-| POST   | `/auth/logout`                 | JWT  | Invalidate refresh token                 |
-| GET    | `/auth/me`                     | JWT  | Current user profile                     |
-| GET    | `/sessions`                    | JWT  | List user's chat sessions                |
-| POST   | `/sessions`                    | JWT  | Create session                           |
-| PATCH  | `/sessions/{id}`               | JWT  | Rename session                           |
-| DELETE | `/sessions/{id}`               | JWT  | Delete session                           |
-| POST   | `/chat`                        | JWT  | Send message in session                  |
-| GET    | `/sessions/{id}/messages`      | JWT  | Full message history                     |
-| GET    | `/news`                        | JWT  | Cached + fresh news feed                 |
-| POST   | `/quiz/generate`               | JWT  | Generate MCQs for a session              |
-| GET    | `/quiz/attempt/{id}`           | JWT  | Load saved quiz state                    |
-| PUT    | `/quiz/attempt/{id}`           | JWT  | Auto-save answers                        |
-| POST   | `/quiz/retry`                  | JWT  | Create new attempt (same questions)      |
-| GET    | `/quiz/attempts`               | JWT  | List past attempts for a session         |
+### Page Routes
+
+| Method | Path               | Auth    | Description                        |
+|--------|--------------------|---------|------------------------------------|
+| GET    | `/`                | —       | Redirect to `/app` or `/login`     |
+| GET    | `/login`           | —       | Login page                         |
+| GET    | `/register`        | —       | Register page                      |
+| GET    | `/app`             | Session | Main 3-pane dashboard              |
+| GET    | `/learn/<id>`      | Session | Learning sub-thread page           |
+| GET    | `/quiz/<id>`       | Session | Full-page quiz (standalone)        |
+
+### Auth
+
+| Method | Path             | Auth    | Description                                         |
+|--------|------------------|---------|-----------------------------------------------------|
+| POST   | `/auth/register` | —       | Register new user, set session cookie               |
+| POST   | `/auth/login`    | —       | Authenticate, set session cookie, redirect to /app  |
+| POST   | `/auth/logout`   | Session | Clear session, redirect to /login                   |
+| GET    | `/auth/me`       | Session | Current user profile (JSON)                         |
+
+### Sessions
+
+| Method | Path                                    | Auth    | Description                            |
+|--------|-----------------------------------------|---------|----------------------------------------|
+| GET    | `/sessions`                             | Session | List user's sessions (with hierarchy)  |
+| POST   | `/sessions`                             | Session | Create session                         |
+| PATCH  | `/sessions/<id>`                        | Session | Rename session                         |
+| DELETE | `/sessions/<id>`                        | Session | Delete session                         |
+| GET    | `/sessions/partial`                     | Session | HTMX partial — sidebar session list    |
+| GET    | `/sessions/<id>/messages`               | Session | Full message history (JSON)            |
+| GET    | `/sessions/<id>/messages/partial`       | Session | HTMX partial — message list HTML       |
+| GET    | `/sessions/<id>/tree`                   | Session | Full ancestry chain (root → current)   |
+| POST   | `/sessions/<id>/learn-more`             | Session | Create learn_more sub-session          |
+
+### Chat
+
+| Method | Path    | Auth    | Description                                        |
+|--------|---------|---------|----------------------------------------------------|
+| POST   | `/chat` | Session | Send message; returns rendered message partial     |
+
+### News
+
+| Method | Path                             | Auth    | Description                                           |
+|--------|----------------------------------|---------|-------------------------------------------------------|
+| GET    | `/news`                          | Session | Cached + fresh news feed (JSON)                       |
+| GET    | `/news/partial`                  | Session | HTMX partial — news panel HTML (`?category=ai`)       |
+| GET    | `/news/topic-partial`            | Session | HTMX partial — topic-filtered articles (`?topic=...`) |
+| POST   | `/news/discuss`                  | Session | Create news_discussion session from article           |
+| POST   | `/news/fact-check`               | Session | Gemini fact-check (Google Search grounding) — returns verdict card HTML |
+
+### Quiz
+
+| Method | Path                                       | Auth    | Description                                           |
+|--------|--------------------------------------------|---------|-------------------------------------------------------|
+| POST   | `/quiz/generate`                           | Session | Generate MCQs for a session                           |
+| POST   | `/quiz/generate-followup`                  | Session | Generate follow-up quiz targeting previous weak areas |
+| GET    | `/quiz/<attempt_id>/partial`               | Session | HTMX partial — inline quiz loaded into #chat-messages |
+| GET    | `/quiz/attempt/<id>`                       | Session | Load saved quiz state (JSON)                          |
+| PUT    | `/quiz/attempt/<id>`                       | Session | Auto-save answers; `completed: true` submits quiz     |
+| POST   | `/quiz/retry`                              | Session | Create new attempt (same questions)                   |
+| GET    | `/quiz/attempts`                           | Session | List past attempts for a session                      |
+| GET    | `/quiz/attempt/<id>/relearn/<question_id>` | Session | AI relearn explanation for a wrong answer             |
 
 ---
 
-## 11. Docker Compose Changes
+## 11. Docker Compose
+
+The frontend container is removed. Flask now serves both the API and HTML pages from one process. The `web` service is the only application container.
 
 ```yaml
 services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
     volumes:
       - redisdata:/data
@@ -623,17 +894,17 @@ services:
   web:
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - JWT_ACCESS_EXPIRES_MINUTES=15
-      - JWT_REFRESH_EXPIRES_DAYS=7
+      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}                # signs session cookies
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}                # DeepSeek for chat / discuss / curation
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-deepseek/deepseek-chat}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}                        # optional — Gemini for fact-check (Layer 5)
+      - FACT_CHECK_MODEL=${FACT_CHECK_MODEL:-gemini-2.0-flash}  # Gemini model for fact-check (Layer 5)
+      - FLASK_ENV=${FLASK_ENV:-production}
     depends_on:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
-
-  frontend:
-    # unchanged
+        condition: service_healthy
 
 volumes:
   pgdata:
@@ -642,16 +913,19 @@ volumes:
 
 ---
 
-## 12. New Python Dependencies
+## 12. Python Dependencies
 
 ```
-# Add to requirements.txt
-PyJWT>=2.8
-bcrypt>=4.1
-redis>=5.0
+# requirements.txt
+flask>=3.0
+flask-session>=0.8      # server-side sessions backed by Redis
+bcrypt>=4.1             # password hashing (cost factor 12)
+redis>=5.0              # session storage + news cache
 APScheduler>=3.10       # hourly news promotion job
 flask-limiter>=3.5      # rate limiting on auth endpoints
 ```
+
+`PyJWT` is removed — session cookies replace JWT entirely.
 
 ---
 
@@ -659,13 +933,14 @@ flask-limiter>=3.5      # rate limiting on auth endpoints
 
 | Risk                        | Mitigation                                                        |
 |-----------------------------|-------------------------------------------------------------------|
-| Brute-force login           | `flask-limiter`: 5 attempts/min per IP on `/auth/login`          |
-| Token theft                 | Short-lived access tokens (15 min); refresh token in HttpOnly cookie |
-| Password storage            | `bcrypt` with cost factor 12                                      |
-| IDOR on sessions/quizzes    | Every DB query filters by `user_id` from JWT — never from body   |
-| Prompt injection in MCQ gen | Conversation text is base64-encoded in the prompt context block  |
-| News cache poisoning        | RSS feeds are fixed constants; no user-controlled URLs            |
-| XSS                         | React escapes by default; `dangerouslySetInnerHTML` is avoided    |
+| Brute-force login           | `flask-limiter`: 5 attempts/min per IP on `/auth/login`                      |
+| Session hijacking           | Sessions stored server-side in Redis; signed cookie ID; `HttpOnly`+`Secure`  |
+| CSRF                        | Flask-WTF CSRF tokens on all state-changing forms; HTMX includes `X-CSRFToken` header |
+| Password storage            | `bcrypt` with cost factor 12                                                  |
+| IDOR on sessions/quizzes    | Every DB query filters by `user_id` from `g.user_id` (set from session) — never from body |
+| Prompt injection in MCQ gen | Conversation text wrapped in `<conversation>…</conversation>` delimiter       |
+| News cache poisoning        | RSS feeds are fixed constants in `feeds.py`; no user-controlled URLs          |
+| XSS                         | Jinja2 auto-escapes all template variables by default; `| safe` only for trusted content |
 
 ---
 
@@ -747,41 +1022,29 @@ The current architecture uses LangGraph's `invoke` (blocking). Streaming (`astre
 
 ### 16.1 Tab Groups
 
-The right-side news panel becomes a tab group with three categories:
+The right-side news panel is a six-tab group:
 
 | Tab | Category key | Purpose |
 |-----|-------------|---------|
-| AI | `ai` | Existing AI/ML research and industry news |
-| Programming | `programming` | Software engineering, tools, languages, infrastructure |
-| Political | `political` | World affairs, policy, governance — for extracting legal/constitutional learning theories |
+| AI | `ai` | AI/ML research, industry news, model releases |
+| Dev | `programming` | Software engineering, tools, languages, infrastructure |
+| World | `political` | World affairs, policy, governance |
+| Bio | `biology` | Biology research journals, preprints, life-science news |
+| Econ | `economy` | Economics, finance, markets, business |
+| Health | `health` | Health, medicine, wellness, beauty |
 
 ### 16.2 RSS Feeds per Category
 
-```python
-NEWS_FEEDS = {
-    "ai": [
-        ("ArXiv AI",         "https://arxiv.org/rss/cs.AI"),
-        ("ArXiv ML",         "https://arxiv.org/rss/cs.LG"),
-        ("HuggingFace Blog", "https://huggingface.co/blog/feed.xml"),
-        ("VentureBeat AI",   "https://venturebeat.com/ai/feed/"),
-        ("The Verge AI",     "https://www.theverge.com/ai-artificial-intelligence/rss/index.xml"),
-    ],
-    "programming": [
-        ("Hacker News",      "https://hnrss.org/frontpage"),
-        ("GitHub Blog",      "https://github.blog/feed/"),
-        ("Stack Overflow",   "https://stackoverflow.blog/feed/"),
-        ("InfoQ",            "https://feed.infoq.com/"),
-        ("Dev.to",           "https://dev.to/feed/tag/programming"),
-    ],
-    "political": [
-        ("Reuters",          "https://feeds.reuters.com/reuters/politicsNews"),
-        ("BBC News",         "https://feeds.bbci.co.uk/news/politics/rss.xml"),
-        ("NPR Politics",     "https://feeds.npr.org/1014/rss.xml"),
-        ("The Guardian",     "https://www.theguardian.com/politics/rss"),
-        ("AP News",          "https://rsshub.app/apnews/topics/politics"),
-    ],
-}
-```
+Source of truth is `backend/api/news/feeds.py`. Current feeds per category:
+
+| Category | Sources |
+|---|---|
+| `ai` | TechCrunch AI, VentureBeat AI, The Verge AI, ArXiv AI, HuggingFace Blog, Reuters Tech, BBC Technology |
+| `programming` | Hacker News, Dev.to, Stack Overflow Blog, InfoQ, GitHub Blog |
+| `political` | Reuters World, BBC World, CNN, AP News, Al Jazeera, NPR News |
+| `biology` | bioRxiv, PLOS Biology, eLife, Science Daily, STAT News, The Scientist, New Scientist |
+| `economy` | Reuters Business, BBC Business, The Economist, MarketWatch, Financial Times, Bloomberg, CNBC |
+| `health` | BBC Health, Reuters Health, Medical News Today, WHO News, Science Daily Health, Healthline, Allure |
 
 ### 16.3 Cache Key Extension
 
@@ -798,38 +1061,37 @@ DB news_cache.cache_key examples:
   "2026-05-04:political"
 ```
 
-`GET /news?category=ai` (default: `ai`) — clients pass the active tab's category. All three categories are pre-warmed by APScheduler at startup and on each hourly promotion.
+`GET /news/partial?category=<tab>` — clients pass the active tab's category key. All six categories are pre-warmed by the APScheduler `_refresh_all` job on each cycle.
 
 ### 16.4 Updated NewsPanel Layout
 
 ```
-┌──────────────────────────────────────┐
-│  [AI]  [Programming]  [Political]    │  ← tab group
-│                                       │
-│  Updated 12 min ago  [↺ Refresh]     │
-│                                       │
-│  ■ HuggingFace Blog                  │  ← source header
-│  ┌──────────────────────────────┐    │
-│  │ Introducing SmolVLM          │    │  ← article card
-│  │ A compact vision-language... │    │
-│  │ 3h ago · [↗ Source]  [Discuss]│  │
-│  └──────────────────────────────┘    │
-│                                       │
-│  ■ ArXiv AI                          │
-│  ┌──────────────────────────────┐    │
-│  │ Flash Attention 3.0          │    │
-│  │ New IO-aware exact attention │    │
-│  │ 1h ago · [↗ Source]  [Discuss]│  │
-│  └──────────────────────────────┘    │
-└──────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│  [AI] [Dev] [World] [Bio] [Econ] [Health]│  ← tab group
+│                                           │
+│  ┌──────────────────────────────────┐    │
+│  │ HuggingFace Blog · 3h ago        │    │  ← source · date header
+│  │                                  │    │
+│  │ Introducing SmolVLM              │    │  ← title
+│  │ A compact vision-language model  │    │  ← description
+│  │ for on-device inference...       │    │
+│  │                                  │    │
+│  │ [Read article] [Explore] [Fact ✓]│    │  ← action row
+│  └──────────────────────────────────┘    │
+│                                           │
+│  ┌──────────────────────────────────┐    │
+│  │ ArXiv AI · 1h ago                │    │
+│  │ Flash Attention 3.0              │    │
+│  │ New IO-aware exact attention...  │    │
+│  │ [Read article] [Explore] [Fact ✓]│    │
+│  └──────────────────────────────────┘    │
+└──────────────────────────────────────────┘
 ```
 
-Each article card exposes:
-- Title (linked to original source)
-- 2-line summary
-- Relative timestamp
-- `[↗ Source]` — opens article URL in new tab
-- `[Discuss]` — triggers the discussion flow described in §17
+Each article card exposes three actions:
+- `[Read article]` — opens article URL in a new tab (`rel="noopener noreferrer"`)
+- `[Explore]` — triggers Layer 4 (`POST /news/discuss`); creates a `news_discussion` session and renders the sectioned response in the chat pane
+- `[Fact Check]` — triggers Layer 5 (`POST /news/fact-check`); single Gemini call with Google Search grounding renders a verdict card in-place (verified / disputed / unverifiable claims with source links). Hidden for research/preprint sources.
 
 ---
 
@@ -1256,12 +1518,12 @@ ALTER TABLE mcq_attempts
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/news?category={ai\|programming\|political}` | JWT | Category-filtered cached news |
-| POST | `/news/discuss` | JWT | Create discussion session from article |
-| POST | `/sessions/{id}/learn-more` | JWT | Create learn_more sub-session |
-| GET | `/sessions/{id}/tree` | JWT | Full ancestry chain (root → current) |
-| POST | `/quiz/generate-hierarchical` | JWT | MCQs spanning full ancestor path |
-| GET | `/quiz/attempt/{id}/relearn/{question_id}` | JWT | AI relearn explanation for wrong answer |
+| GET | `/news?category={ai\|programming\|political}` | Session | Category-filtered cached news |
+| POST | `/news/discuss` | Session | Create discussion session from article |
+| POST | `/sessions/{id}/learn-more` | Session | Create learn_more sub-session |
+| GET | `/sessions/{id}/tree` | Session | Full ancestry chain (root → current) |
+| POST | `/quiz/generate-hierarchical` | Session | MCQs spanning full ancestor path |
+| GET | `/quiz/attempt/{id}/relearn/{question_id}` | Session | AI relearn explanation for wrong answer |
 
 ### Updated Existing Endpoints
 
@@ -1272,52 +1534,47 @@ ALTER TABLE mcq_attempts
 
 ---
 
-## 23. Updated Frontend Architecture
+## 23. Phase 6 Frontend Architecture (SSR)
 
-### 23.1 New Routes
+### 23.1 New Page Routes
 
 ```
-/app               → main app (regular + news_discussion sessions, news right pane)
-/learn/:sessionId  → learning sub-thread tab (knowledge tree right pane)
-/quiz/:attemptId   → quiz page (both flat and hierarchical)
-/login             → Login (unchanged)
-/register          → Register (unchanged)
+GET /app               → main app (sidebar + chat + news tab group)
+GET /learn/<sessionId> → learning sub-thread (sidebar + chat + knowledge tree)
+GET /quiz/<attemptId>  → quiz page (full-width MCQ cards)
+GET /login             → Login
+GET /register          → Register
 ```
 
 ### 23.2 Right Pane Strategy
 
-| Route | Session type visible | Right pane |
-|-------|---------------------|-----------|
-| `/app` | regular OR news_discussion | `NewsPanel` (tab group: AI / Programming / Political) |
-| `/learn/:id` | learn_more | `KnowledgeTree` |
-| `/quiz/:id` | — | N/A (quiz is full-width) |
+| Route | Session type visible | Right pane template |
+|-------|---------------------|---------------------|
+| `/app` | regular OR news_discussion | `partials/news_panel.html` (tab group: AI / Programming / Political) |
+| `/learn/<id>` | learn_more | `partials/knowledge_tree.html` |
+| `/quiz/<id>` | — | N/A (full-width) |
 
-### 23.3 New & Updated Components
+### 23.3 New Templates and Partials
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| `NewsTabs.tsx` | `components/` | Tab group wrapper (AI / Programming / Political) |
-| `NewsArticleCard.tsx` | `components/` | Article card with Discuss button |
-| `SectionedMessage.tsx` | `components/` | Renders sectioned AI response with Learn More buttons |
-| `KnowledgeTree.tsx` | `components/` | Visual hierarchy tree for right pane of `/learn` |
-| `TreeNode.tsx` | `components/` | Single node in the hierarchy tree |
-| `RelearPanel.tsx` | `components/` | Wrong-answer explanation card in quiz |
-| `ChatSidebar.tsx` | `components/` | Updated: nested `learn_more` sessions under parents |
-| `useDiscuss.ts` | `hooks/` | POST /news/discuss, open sub-session |
-| `useLearnMore.ts` | `hooks/` | POST /sessions/{id}/learn-more, open new tab |
-| `useSessionTree.ts` | `hooks/` | GET /sessions/{id}/tree |
-| `useHierarchicalQuiz.ts` | `hooks/` | POST /quiz/generate-hierarchical, relearn |
+| Template | Purpose |
+|----------|---------|
+| `partials/news_tabs.html` | Tab group: AI / Programming / Political (Alpine.js tabs + HTMX per-tab load) |
+| `partials/news_article_card.html` | Article card with Discuss button (HTMX post) |
+| `partials/sectioned_message.html` | Sectioned AI response with Learn More buttons |
+| `partials/knowledge_tree.html` | Visual hierarchy tree (server-rendered nodes) |
+| `partials/relearn_panel.html` | Wrong-answer explanation (HTMX lazy-load) |
+| `partials/session_list.html` | Updated: nested learn_more sessions under parents |
 
-### 23.4 Updated State Management
+### 23.4 Phase 6 State Management
 
 | Concern | Solution |
 |---------|---------|
-| Active news tab | Local state in `NewsTabs` (no persistence needed) |
-| Discuss loading state | `useDiscuss` hook local state |
-| Learn More loading per section | Map of `{sectionId: loading\|done}` in `SectionedMessage` |
-| Knowledge tree | React Query keyed by `['tree', sessionId]` |
-| Hierarchical quiz | `useHierarchicalQuiz` hook (same pattern as `useQuiz`) |
-| Relearn explanations | React Query keyed by `['relearn', attemptId, questionId]` |
+| Active news tab | Alpine.js `x-data` local state |
+| Discuss loading state | HTMX `hx-indicator` on the Discuss button |
+| Learn More loading per section | Alpine.js per-button state `{loading, opened}` |
+| Knowledge tree | Server-rendered via `GET /sessions/<id>/tree`; HTMX on mount |
+| Hierarchical quiz | Same HTMX MCQ pattern; `POST /quiz/generate-hierarchical` |
+| Relearn explanations | HTMX lazy-load `GET /quiz/attempt/<id>/relearn/<q_id>` on expand |
 
 ---
 
@@ -1340,3 +1597,319 @@ This prevents the user from accidentally opening duplicate tabs for the same sec
 
 **Why does the hierarchical MCQ span the full root-to-current path, not just the current topic?**
 Learning is cumulative. If the user is 3 levels deep studying "50 U.S.C. §§ 1541–1548", they should also be tested on "War Powers Resolution Act" (level 1) and "US military operations" (root context). The quiz reinforces the full reasoning chain, not just the terminal concept.
+
+---
+
+## 25. AI Architecture
+
+The system has **five distinct AI/data layers** that operate independently. The originally-planned ADK Research → FactCheck → Editor pipeline was **not shipped** — what is implemented is the simpler, more direct architecture below.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Layer 1: APScheduler (hourly RSS fetch — NO AI)                │
+│  feedparser → 5 articles per source; up to 35 cached/category   │
+│  Redis: news:hour:YYYY-MM-DD-HH:category (TTL 1h)               │
+│         news:day:YYYY-MM-DD:category    (TTL 24h)               │
+│  Jobs: promote_hour_to_day + fetch_and_cache (every hour)       │
+└─────────────────────────────────┬───────────────────────────────┘
+                                  │ cached articles
+┌─────────────────────────────────▼───────────────────────────────┐
+│  Layer 2: AI News Curation (DeepSeek via OpenRouter, hourly)    │
+│  curate_with_ai() in backend/api/news/cache.py                  │
+│  Ranks articles by importance for technical audience            │
+│  NEWS_CURATION_PROMPT → reorders cached list                    │
+│  Falls back to original RSS order on LLM failure                │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Layer 3: LangGraph ReAct Agent (DeepSeek via OpenRouter)       │
+│  POST /chat → compiled.invoke() → PostgreSQL checkpoint          │
+│  Single StateGraph in backend/agent/graph.py:                    │
+│    nodes: agent (DeepSeek call) + tools (ToolNode)               │
+│  Tools:                                                          │
+│    get_latest_ai_news — reads Redis cache mid-conversation       │
+│    fetch_url          — fetches public URL content via HTTP      │
+│  First message of new session: top 5 cached headlines injected   │
+│  Used for: regular chat, news_discussion follow-up turns         │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Layer 4: Direct LLM Pipeline (DeepSeek) — Explore / Learn More │
+│  _run_discussion_pipeline() in backend/api/discuss/service.py   │
+│  Direct DeepSeek call (NO LangGraph graph traversal)            │
+│  DISCUSSION_PROMPT / LEARN_MORE_PROMPT → sectioned JSON          │
+│  POST /news/discuss              (Explore button on article)     │
+│  POST /sessions/<id>/learn-more  (Explore on a section card)     │
+│  First exchange stored in LangGraph checkpoint via update_state │
+│  (no second LLM call to persist — direct write-through)         │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Layer 5: Gemini Fact-Check Pipeline (google-genai, on-demand)  │
+│  backend/agent/pipeline.py — single Gemini API call with        │
+│  native Google Search grounding (GoogleSearch tool)             │
+│  Gemini searches Google automatically during generation,        │
+│  then rates each claim verified/disputed/unverifiable + JSON    │
+│  Triggered ONLY by [Fact Check] button on news article cards    │
+│  Hidden for research/preprint sources (ArXiv, bioRxiv, etc.)   │
+│  Requires GOOGLE_API_KEY; gracefully returns error card if unset│
+│  Completely separate from chat / discuss flow                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 25.1 Layer 1 — Hourly RSS Cache + Embedding Pre-compute (no AI)
+
+`feedparser` pulls **5 articles per source** across all feeds. Three APScheduler jobs run on a 1–1.5 h cycle:
+
+| Job | Purpose |
+|-----|---------|
+| `news_cache_promote` | Merges the previous hour's Redis cache into the day cache (hourly) |
+| `news_cache_refresh` | Fetches fresh RSS articles per category, runs Layer 2 curation, writes to Redis (every 1.5 h ± 300 s jitter). At the end of each refresh cycle, calls `refresh_article_embeddings()` to rebuild the embedding store. |
+
+Redis keys written:
+- `news:hour:{YYYY-MM-DD-HH}:{category}` — TTL 1 h (category news panel)
+- `news:day:{YYYY-MM-DD}:{category}` — TTL 24 h (category news panel)
+- `news:article_embeddings:all-MiniLM-L6-v2:v1` — TTL 1 h (topic-news semantic search)
+- `news:category_embeddings:all-MiniLM-L6-v2:v1` — TTL 24 h (zero-shot category routing fallback)
+- `news:topic:{sha256[:10]}:{hours}` — TTL 30 min / 10 min (per-topic result cache)
+
+### 25.2 Layer 2 — AI News Curation
+
+After each RSS fetch, `curate_with_ai()` in `backend/api/news/cache.py` calls DeepSeek with `NEWS_CURATION_PROMPT`. The model selects up to 10 of the most important articles for a general educated audience and returns them first; the remainder are sorted newest-first and appended. AI-selected articles are tagged `_curated: True` (only when there is a non-curated remainder — if all articles are selected, no badge is shown). The `/news/partial` route slices the cached list to **15 articles** before passing to the template, so the sidebar never shows more than 15 cards. If the LLM call fails, the original RSS order is preserved (no service interruption).
+
+### 25.3 Layer 3 — LangGraph ReAct Agent
+
+The chat agent in `backend/agent/graph.py` is a single `StateGraph` with two nodes:
+
+| Node | Role |
+|------|------|
+| `agent` | Calls DeepSeek with the conversation history + system prompt |
+| `tools` | LangGraph `ToolNode` that executes any tool calls returned by the agent |
+
+A conditional edge routes from `agent` → `tools` when the model requests a tool, then back to `agent`. Two tools are registered:
+
+| Tool | Purpose |
+|------|---------|
+| `get_latest_ai_news` | Reads the Redis news cache (Layer 1) so the agent can reference current headlines mid-conversation |
+| `fetch_url` | Fetches the plain-text content of any publicly accessible URL the user pastes. Uses `requests` + `BeautifulSoup4` — strips nav/footer/scripts, extracts `<main>` or `<article>` content, truncates to 4 000 chars. Falls back gracefully on timeouts, HTTP errors, or paywalled pages. |
+
+`fetch_url` follows the standard ReAct pattern: the agent detects a URL in the user message, calls the tool, receives page text, then generates the structured educational response using that content as grounding. No third-party reader service is used — plain HTTP only.
+
+**State persistence:** all conversation history is stored via `PostgresSaver` (LangGraph's PostgreSQL checkpointer). Sessions survive server restarts; the checkpointer is keyed by `thread_id`, which equals the `chat_sessions.id` row.
+
+**News injection:** when a session has no prior messages, the first `system` message includes the top 5 cached AI headlines so the agent has fresh context without needing to call the tool.
+
+This layer powers `POST /chat` and any follow-up turns inside a `news_discussion` session.
+
+### 25.4 Layer 4 — Direct LLM Pipeline (Explore / Learn More)
+
+The Explore and Learn More flows do **not** go through LangGraph. `_run_discussion_pipeline()` in `backend/api/discuss/service.py` makes a direct DeepSeek call with the appropriate prompt:
+
+- `DISCUSSION_PROMPT` — for `POST /news/discuss` (Explore button on a news card)
+- `LEARN_MORE_PROMPT` — for `POST /sessions/<id>/learn-more` (Explore on a section card)
+
+Both prompts return **structured sectioned JSON** (intro, 3–5 sections, outro — see §18). After the call, the response is validated and the first exchange is written into the LangGraph checkpoint via `update_state` so subsequent turns in the session can use Layer 3 with the full history. There is no second LLM call to persist the message — the direct call's output is the stored content.
+
+### 25.5 Layer 5 — Gemini Fact-Check Pipeline (on-demand)
+
+`backend/agent/pipeline.py` makes a **single synchronous `google-genai` API call** with the native `GoogleSearch` grounding tool enabled. Gemini performs web searches automatically during generation — no separate search agent or async orchestration needed.
+
+| Step | What happens |
+|------|-------------|
+| Build prompt | Article title + summary formatted into `FACT_CHECK_PROMPT` |
+| `client.models.generate_content()` | Gemini searches Google for each claim and generates verdict JSON in one call |
+| `_merge_grounding_sources()` | Source URLs pulled from `grounding_metadata.grounding_chunks` and attached to claims that didn't include URLs |
+
+The response is parsed as JSON with keys `overall_verdict`, `claims[]` (each with `claim`, `verdict`, `evidence`, `sources`), and `summary`.
+
+**Source filtering:** the `[Fact Check]` button is hidden server-side (Jinja2 `{% if not is_research %}`) for research/preprint sources: ArXiv AI, ArXiv ML, HuggingFace Blog, GitHub Blog, bioRxiv, PLOS Biology, eLife. It appears only on news sources where web-verifiable claims exist.
+
+Triggered **only** by the `[Fact Check]` button (`POST /news/fact-check`). Requires `GOOGLE_API_KEY`; returns a graceful error card if unset. Completely isolated from chat/discuss — never writes to `chat_sessions` or LangGraph state.
+
+### 25.6 Agent Package Structure
+
+```
+backend/agent/
+├── graph.py         ← LangGraph StateGraph (Layer 3 — chat agent + checkpointer)
+├── pipeline.py      ← Gemini + Google Search grounding (Layer 5 — fact-check)
+├── prompts.py       ← All prompt constants:
+│                       SYSTEM_PROMPT (Layer 3 chat)
+│                       AUTO_TITLE_PROMPT
+│                       NEWS_CURATION_PROMPT (Layer 2)
+│                       DISCUSSION_PROMPT (Layer 4 — Explore)
+│                       LEARN_MORE_PROMPT (Layer 4 — Learn More)
+│                       MCQ_GENERATION_PROMPT
+│                       MCQ_FOLLOWUP_PROMPT  ← follow-up quiz targeting weak areas
+│                       RELEARN_PROMPT
+│                       FACT_CHECK_PROMPT (Layer 5 — inline in pipeline.py)
+└── tools.py         ← LangChain @tool: get_latest_ai_news
+```
+
+> Note: `FACT_CHECK_PROMPT` is defined as a module-level constant in `pipeline.py` (not in `prompts.py`) since it is only ever used there.
+
+**`MCQ_FOLLOWUP_PROMPT`** wraps the previous attempt summary (per-question correct/wrong breakdown) and instructs the LLM to generate 8 new questions that probe wrong answers at a deeper level and test adjacent ideas for correct answers. No question text from the previous attempt may be reused verbatim.
+
+### 25.7 Three-Pane Layout
+
+The app uses a full-screen three-pane layout. The left sidebar is collapsible and all three panes are **user-resizable** via drag handles:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  [☰]  Knowledge Root                                    Sign Out     │  ← nav
+├──────────────────┬──┬──────────────────────────────┬──┬─────────────┤
+│  LEFT SIDEBAR    │▌ │      CHAT (centre)            │▌ │  NEWS PANE  │
+│  resizable       │  │      flex-1                   │  │  resizable  │
+│  (toggleable)    │  │                               │  │             │
+│                  │  │  Message thread               │  │[AI] [Dev]   │
+│  [+ New Chat]    │  │  (HTMX append)                │  │[World][Bio] │
+│                  │  │                               │  │[Econ][Health]│
+│  ──────────      │  │                               │  │ ──────────  │
+│  Today           │  │  Inline quiz inside           │  │ Article     │
+│  ├─ Chat A ●     │  │  #chat-messages               │  │ cards       │
+│  │  ├─ Sub 1     │  │  (.knr-quiz-root)             │  │             │
+│  │  └─ Sub 2     │  │                               │  │ [Read]      │
+│  └─ 📰 News X    │  │  [🧠 Check Knowledge]         │  │ [Explore]   │
+│     ├─ ⚡ Sub 1  │  │  (disabled during loads or    │  │ [Fact ✓]    │
+│  Yesterday       │  │   unsubmitted quiz)            │  │             │
+│  └─ Chat B       │  │                               │  │ Loading     │
+│                  │  │  [Type a message...]   [Send] │  │ overlay     │
+└──────────────────┴──┴──────────────────────────────┴──┴─────────────┘
+```
+
+**Sidebar toggle** (Alpine.js + CSS transition):
+- `[☰]` button dispatches `toggle-sidebar` event; sidebar width transitions to 0.
+- Collapsible: each `news_discussion` root has an expand/collapse arrow hiding its `learn_more` children. Collapsing triggers `_reapplyActiveDot()` to bubble the green dot to the nearest visible ancestor.
+
+**Green dot active indicator** (`session_list.html`):
+- Each `<a data-session-id="...">` has an absolutely-positioned `.knr-dot hidden` span.
+- `window._reapplyActiveDot()` shows the dot on the active row. If the active session is hidden (collapsed subtree), walks up `[x-data]` ancestors to find the nearest visible parent row and shows a softer dot there.
+
+**Centre pane input bar** is **always visible** — sending a message with no active session auto-creates a `regular` session before the first turn.
+
+---
+
+## 26. Dependencies
+
+Full `requirements.txt`:
+
+```
+flask>=3.0
+flask-session>=0.8
+pydantic>=2.0
+flask-limiter[redis]>=3.5
+langgraph>=0.2
+langgraph-checkpoint-postgres>=2.0
+psycopg[binary]>=3.2
+psycopg-pool>=3.2
+langchain-openai>=0.2
+langchain-core>=0.3
+feedparser>=6.0
+python-dotenv>=1.0
+gunicorn>=22.0
+redis>=5.0
+apscheduler>=3.10
+bcrypt>=4.1
+google-genai>=1.0
+fastembed>=0.3
+```
+
+**Notable packages:**
+- `google-genai` — current Google GenAI Python SDK (replaces the deprecated `google-generativeai`). Provides `google.genai.Client` and `types.Tool(google_search=types.GoogleSearch())` grounding for Layer 5. No ADK, no `litellm`.
+- `fastembed` — ONNX-runtime-based embedding library (~60 MB install, no PyTorch). Loads `sentence-transformers/all-MiniLM-L6-v2` (384-dim) for topic-news semantic search. Model is downloaded on first use and cached by the library. `numpy` is a transitive dependency. No GPU required — CPU inference takes ~150 ms for a batch of 150 articles. Chosen over `sentence-transformers` to avoid the ~1.5 GB PyTorch Docker layer.
+
+---
+
+## 27. Learning Platform Prompt Design
+
+The platform has four distinct AI interaction scenarios. Each maps to a learner's cognitive mode and uses a purpose-built prompt in `backend/agent/prompts.py`.
+
+### 27.1 The Four Scenarios
+
+| # | Trigger | Cognitive Mode | Goal | Prompt used |
+|---|---------|---------------|------|-------------|
+| 1 | User types a question in chat | Orientation or drilling, depending on question breadth | Show the complete concept map at the level asked — every major pillar covered | `SYSTEM_PROMPT` |
+| 2 | Explore button on a news card | Orientation anchored to a current event | Extract every conceptual pillar this news article touches — complete for its context, not the full domain | `DISCUSSION_PROMPT` |
+| 3 | Explore button on a response section | Drilling — user chose their path | Go exactly one level deeper into the clicked concept; cover ALL sub-components at that level | `LEARN_MORE_PROMPT` |
+| 4 | Quiz / Check Knowledge button | Assessment | Test retention of what was learned; no new teaching content | `MCQ_GENERATION_PROMPT` / `MCQ_FOLLOWUP_PROMPT` |
+
+### 27.2 The Completeness Mandate
+
+The single most important rule across all teaching prompts (1, 2, 3): **cover every major pillar at the current level**. A learner must be able to see the complete shape of the subject from one response. Missing a significant concept is treated as a prompt failure.
+
+This is what distinguishes the platform from a generic chatbot: a chatbot picks interesting points; a learning platform guarantees the map is complete.
+
+### 27.3 When to Give a Full Domain Map vs. Targeted Depth
+
+- **Broad question** ("explain machine learning", "what is the Roman Empire") → give the full domain map — all major areas covered at the top level
+- **Specific question** ("how does backpropagation work?", "what is RLHF?") → stay at that level but be exhaustive — cover ALL components of the specific concept asked
+- **News Explore** (Scenario 2) → stay at news-relevant level — cover all conceptual pillars this event touches, not the full domain
+- **Section Explore** (Scenario 3) → go one level deeper into the clicked concept only — do not revisit siblings from the parent response
+
+The rule: **match the abstraction level the user asked at, but be complete at that level.**
+
+### 27.4 Section Structure (`sectioned` response type)
+
+Every section in a teaching response carries these fields:
+
+| Field | Purpose |
+|---|---|
+| `id` | Unique section identifier (`"s1"`, `"s2"`, …) |
+| `title` | Name of the concept or component |
+| `content` | 2–3 sentence plain-English explanation — how it works and why it matters |
+| `key_points` | 3 concrete, testable learning points — specific facts, trade-offs, or mechanisms (not restatements of the title) |
+| `misconception` | The single most common wrong assumption about this concept — one sentence; prevents bad mental models from forming |
+| `learn_more_topic` | Specific sub-topic string for a deeper Explore follow-up session |
+
+### 27.5 Learning Progression Rule
+
+Sections within a response are always ordered:
+1. **Foundational concept** — what this thing is and why it exists
+2. **Core mechanism** — how it works internally
+3. **Application layer** — how it is used in practice
+4. **Advanced / edge cases** — nuance, trade-offs, limitations
+
+This ordering lets a user who reads top-to-bottom build understanding progressively. A user who wants depth first can skip ahead via Explore.
+
+### 27.6 Scenario 1 — `SYSTEM_PROMPT` (Manual Chat)
+
+Domain: **any topic** — technology, science, history, economics, biology, politics, mathematics. The domain lock to AI/ML that existed in earlier versions is removed. The right-side news panel covers AI/Dev/World/Bio/Econ/Health; the chat window should match that breadth.
+
+Key rules specific to this prompt:
+- `intro` must state what background knowledge is assumed (or "No prior knowledge needed")
+- Section count is adaptive: 4–6 typically, up to 7 for complex multi-pillar subjects; minimum 3
+- `outro` must give a concrete recommended exploration order: which section to explore first and why
+
+### 27.7 Scenario 2 — `DISCUSSION_PROMPT` (News Explore)
+
+The news article is the anchor. The response radiates outward from the event, not from the full domain.
+
+Key rules specific to this prompt:
+- `intro` states what areas of knowledge the news event touches and why they matter now
+- Sections cover concepts the event exposes — not the full field those concepts belong to
+- Do not discuss: people's personal actions, political opinions, specific dates/names as the main subject
+- Do write about: underlying laws, frameworks, mechanisms, historical/technical context
+
+### 27.8 Scenario 3 — `LEARN_MORE_PROMPT` (Section Explore)
+
+The user explicitly chose this sub-topic. They want depth, not breadth.
+
+Key rules specific to this prompt:
+- `intro` must include a one-sentence breadcrumb: "This is a deep-dive into [topic], a sub-component of [parent concept]." This prevents learners from getting lost after multiple Explore clicks.
+- Every sub-section must go exactly one level deeper than the parent topic — never restating the parent
+- `learn_more_topic` on each sub-section must be more specific than the section title
+
+### 27.9 Scenario 4 — MCQ Prompts (Assessment)
+
+Assessment prompts are intentionally separate from learning prompts. They never explain or teach — they only test and adapt.
+
+- `MCQ_GENERATION_PROMPT` — generates 8 questions from the current conversation; tests technical concepts, trade-offs, mechanisms
+- `MCQ_FOLLOWUP_PROMPT` — generates 8 adaptive questions after a previous attempt; prioritises wrong answers at a deeper level
+- `RELEARN_PROMPT` — per-question explanation triggered when a user gets a question wrong; 3–4 sentences of grounded explanation
+- Questions never ask about: names, dates, organisations, locations, trivia — only testable concepts
+
+### 27.10 Placeholder Text
+
+The chat input placeholder reflects the platform's domain breadth:
+> "Ask anything — science, history, technology, economics…"
+
+This replaces the old "Ask anything about AI, ML, or software…" which implied a domain restriction that no longer exists in the AI layer.

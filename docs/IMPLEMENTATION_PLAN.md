@@ -2,7 +2,7 @@
 
 > Companion to `ARCHITECTURE.md`. Each phase maps to one Git branch, merged to `main` via PR after passing all automated reviews and tests.
 >
-> **Stack:** Flask (Python) · PostgreSQL · Redis · LangGraph · OpenRouter LLM · React 18 + TypeScript + Vite · Playwright E2E · pytest · Vitest
+> **Stack:** Flask (Python) · PostgreSQL · Redis · LangGraph · OpenRouter LLM · Jinja2 + HTMX + Alpine.js · Playwright E2E · pytest
 
 ---
 
@@ -15,8 +15,11 @@ All Python server code lives in the `backend/` package. When this plan refers to
 | Flask app factory | `backend/app.py` |
 | Config classes | `backend/config.py` |
 | Extension singletons | `backend/extensions.py` |
+| User domain model | `backend/domain/user.py` |
+| User repository | `backend/repositories/user_repository.py` |
 | Auth routes | `backend/api/auth/routes.py` |
 | Auth service | `backend/api/auth/service.py` |
+| Auth request schemas | `backend/api/auth/schemas.py` |
 | Sessions routes | `backend/api/sessions/routes.py` |
 | Sessions service | `backend/api/sessions/service.py` |
 | Chat routes | `backend/api/chat/routes.py` |
@@ -70,42 +73,26 @@ Merge only after all checks green and PR description references affected `PROGRE
 
 ## Test Strategy
 
-| Layer       | Tool                       | Location                      | When runs          |
-|-------------|----------------------------|-------------------------------|--------------------|
-| Backend unit| pytest + pytest-flask      | `tests/unit/`                 | `ci.yml` on PR     |
-| Frontend unit| Vitest + Testing Library   | `frontend/src/**/*.test.tsx`  | `ci.yml` on PR     |
-| E2E         | Playwright                 | `e2e/*.spec.ts`               | `ci.yml` on PR     |
-| Static analysis | flake8 + mypy (backend), ESLint + tsc (frontend) | inline | `ci.yml` on PR |
+| Layer           | Tool                  | Location              | When runs          |
+|-----------------|-----------------------|-----------------------|--------------------|
+| Backend unit    | pytest + pytest-flask | `tests/unit/`         | `ci.yml` on PR     |
+| Template/view   | pytest + Flask client | `tests/unit/test_pages.py` | `ci.yml` on PR |
+| E2E             | Playwright            | `e2e/*.spec.ts`       | `ci.yml` on PR     |
+| Static analysis | flake8 + mypy         | `backend/`            | `ci.yml` on PR     |
+
+No frontend unit tests (no React component logic to isolate). Template rendering is tested via the Flask test client in pytest (assert HTML response codes, content, redirects).
 
 **Backend test structure:**
 ```
 tests/
-  conftest.py          ← pytest fixtures: test app, test DB, test Redis client
+  conftest.py          ← pytest fixtures: test app, test DB, test Redis, auth helpers
   unit/
-    test_auth.py
+    test_auth.py       ← register/login/logout routes + service logic
+    test_pages.py      ← page routes: status codes, redirects, auth guards
     test_sessions.py
     test_news.py
     test_quiz.py
-  integration/         ← optional, hits real DB in CI using test container
-```
-
-**Frontend test structure:**
-```
-frontend/src/
-  pages/
-    Login.test.tsx
-    Register.test.tsx
-    Quiz.test.tsx
-  components/
-    ChatSidebar.test.tsx
-    NewsPanel.test.tsx
-    MCQCard.test.tsx
-  hooks/
-    useAuth.test.ts
-    useSessions.test.ts
-    useQuiz.test.ts
-  api/
-    auth.test.ts
+  integration/         ← optional, hits real DB in CI
 ```
 
 **E2E structure:**
@@ -130,39 +117,40 @@ Users can register, log in, refresh their session, and log out. All existing rou
 ```
 backend/app.py                         ← create_app() factory
 backend/config.py                      ← Config / DevelopmentConfig / ProductionConfig / TestingConfig
-backend/extensions.py                  ← db_pool, redis_client, limiter singletons
+backend/extensions.py                  ← db_pool, redis_client, limiter, session singletons
+backend/domain/__init__.py
+backend/domain/user.py                 ← User frozen dataclass + to_profile() method
+backend/repositories/__init__.py
+backend/repositories/user_repository.py  ← UserRepository class + user_repo module-level singleton
 backend/api/__init__.py
 backend/api/auth/__init__.py
-backend/api/auth/routes.py             ← Blueprint('/auth'): register, login, refresh, logout, me
-backend/api/auth/service.py            ← register_user(), login_user(), refresh_token(), logout()
+backend/api/auth/routes.py             ← Blueprint('/auth'): register, login, logout, me
+backend/api/auth/schemas.py            ← Pydantic v2: RegisterRequest, LoginRequest
+backend/api/auth/service.py            ← register_user(), login_user(), get_user() — uses user_repo
+backend/api/pages/__init__.py
+backend/api/pages/routes.py            ← Blueprint('pages'): /, /login, /register, /app, /quiz/<id>, /learn/<id>
 backend/core/__init__.py
-backend/core/auth.py                   ← @require_auth decorator, g.user_id injection
+backend/core/auth.py                   ← require_auth (page redirect), require_api_auth (401 JSON)
 backend/core/db.py                     ← query(), query_one(), execute(), run_migrations()
 backend/core/errors.py                 ← AppError hierarchy, register_error_handlers(app)
 backend/core/llm.py                    ← build_llm_client() factory
 backend/migrations/001_users.sql       ← users table DDL
+backend/templates/base.html            ← HTML shell: CDN links (HTMX, Alpine.js, Tailwind)
+backend/templates/auth/login.html      ← Login form (HTMX post, inline error swap)
+backend/templates/auth/register.html   ← Register form
 wsgi.py                                ← from backend.app import create_app; app = create_app()
-tests/conftest.py                      ← app fixture (TestingConfig), auth helpers
+tests/conftest.py                      ← app fixture (TestingConfig), authed_client fixture (session_transaction)
 tests/unit/test_auth.py
-frontend/src/pages/LoginPage.tsx
-frontend/src/pages/RegisterPage.tsx
-frontend/src/components/ProtectedRoute.tsx
-frontend/src/store/authStore.ts        ← Zustand: accessToken, user profile
-frontend/src/api/auth.ts               ← register/login/refresh/logout/me API calls
-frontend/src/hooks/useAuth.ts
-frontend/src/pages/LoginPage.test.tsx
-frontend/src/pages/RegisterPage.test.tsx
-frontend/src/hooks/useAuth.test.ts
+tests/unit/test_pages.py               ← page route status codes, redirects, auth guards
 e2e/auth.spec.ts
 ```
 
 ### Modified Files
 ```
-requirements.txt       ← add PyJWT, bcrypt, flask-limiter
-docker-compose.yml     ← add JWT_SECRET_KEY env var; Dockerfile CMD → gunicorn wsgi:app
-Dockerfile             ← update CMD to: gunicorn wsgi:app --bind 0.0.0.0:5000 --workers 4
-frontend/src/App.tsx   ← wrap routes with ProtectedRoute, add /login, /register
-frontend/src/api/client.ts ← attach Authorization header, intercept 401 → refresh
+requirements.txt       ← add flask-session, bcrypt, flask-limiter; remove PyJWT
+docker-compose.yml     ← add SESSION_SECRET_KEY env var; remove frontend service; Dockerfile CMD → gunicorn wsgi:app
+Dockerfile             ← CMD: gunicorn wsgi:app --bind 0.0.0.0:5000 --workers 4
+Makefile               ← replace package.json scripts with make targets
 ```
 
 ### Backend Tasks
@@ -184,146 +172,147 @@ CREATE INDEX idx_users_username ON users(username);
 ```
 Run migration in `app.py` startup (same pattern as `PostgresSaver.setup()`).
 
-#### 1.2 `backend/api/auth/service.py` — Business Logic + `routes.py` — Endpoints
+#### 1.2 `backend/domain/user.py`, `backend/repositories/user_repository.py`, `backend/api/auth/schemas.py`, `backend/api/auth/service.py`, `backend/api/auth/routes.py`
+
+**Domain model (`domain/user.py`):**
+- `User` is a frozen `@dataclass` — no Flask, no DB imports.
+- Fields: `id`, `username`, `email`, `full_name`, `created_at`, `phone` (optional).
+- `to_profile()` returns a dict safe for JSON serialisation (no password hash).
+
+**Repository (`repositories/user_repository.py`):**
+- `UserRepository` encapsulates all SQL; returns `User` objects, never raw dicts.
+- Methods: `find_by_id()`, `find_for_auth()` (returns `(User, hash)` or `None`), `exists_by_username()`, `exists_by_email()`, `create()`.
+- Module-level singleton: `user_repo = UserRepository()`.
+
+**Pydantic schemas (`api/auth/schemas.py`):**
+- `RegisterRequest` — validates username (3–50, `^[a-zA-Z0-9_]+$`), email (RFC 5322), phone (E.164 optional), full_name, password (≥ 8 chars, ≥ 1 digit, ≥ 1 letter) via `@model_validator(mode='after')`.
+- `LoginRequest` — validates `identifier` and `password` are non-empty.
+- On failure: `@model_validator` raises `ValueError(dict)` → route `_parse()` converts to `UnprocessableError(fields={...})`.
 
 **`POST /auth/register`**
-- Validate: username (3–50, `^[a-zA-Z0-9_]+$`), email (RFC 5322), phone (E.164 optional), full_name (1–100), password (≥ 8 chars, ≥ 1 digit, ≥ 1 letter).
-- Check unique username and email — return `409` on conflict with field-specific message.
-- `bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12))`.
-- Insert into `users`. Return `201` with profile (no hash).
+- Route calls `_parse(RegisterRequest, _get_data())`, then `auth_service.register_user(username, email, full_name, password, phone)`.
+- Service checks `user_repo.exists_by_username()` / `exists_by_email()` — raises `ConflictError` on conflict.
+- `bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12))` in service, then `user_repo.create(...)`.
+- `session['user_id'] = user.id`, `session.permanent = True`. HTMX: 204 + `HX-Redirect`. Browser: 302.
 
 **`POST /auth/login`**
-- Accept `identifier` (username OR email) + `password`.
-- Look up by username; if not found, try email.
-- `bcrypt.checkpw()` — constant-time comparison.
-- On success: issue access token (JWT, `sub=user_id`, `exp=now+15m`) and refresh token (JWT, `sub=user_id`, `jti=uuid`, `exp=now+7d`).
-- Store refresh token `jti` in Redis key `refresh:{jti}` with 7-day TTL.
-- Return access token in JSON; set refresh token in `HttpOnly; SameSite=Strict; Path=/auth/refresh` cookie.
+- Route calls `_parse(LoginRequest, _get_data())`, then `auth_service.login_user(identifier, password)`.
+- Service calls `user_repo.find_for_auth(identifier)` (tries username then email), `bcrypt.checkpw()`.
+- On success: set session, redirect. On failure: raise `UnauthorizedError`.
 
-**`POST /auth/refresh`**
-- Read refresh JWT from cookie.
-- Verify signature and expiry.
-- Check `redis.exists(f"refresh:{jti}")` — if missing, token was already rotated or revoked; return `401`.
-- Delete old `refresh:{jti}` from Redis (rotation).
-- Issue new access token + new refresh token (new `jti`). Store new `jti` in Redis.
+**`POST /auth/logout`**
+- `session.clear()` — deletes the server-side session from Redis. Redirect to `/login`.
 
-**`POST /auth/logout`** (requires auth)
-- Delete `refresh:{jti}` from Redis.
-- Clear the refresh cookie.
-
-**`GET /auth/me`** (requires auth)
-- Return user profile from `g.user_id`.
+**`GET /auth/me`** (requires `@require_api_auth`)
+- Return `auth_service.get_user(g.user_id).to_profile()` as JSON.
 
 #### 1.3 `backend/core/auth.py`
 ```python
 def require_auth(f):
-    # Decode Authorization: Bearer <token>
-    # On valid token: g.user_id = payload['sub']
-    # On invalid/missing: raise UnauthorizedError (registered_error_handlers converts to 401)
+    # Page routes: redirect to /login if session missing
+    # Sets g.user_id = session['user_id']
+
+def require_api_auth(f):
+    # HTMX/JSON endpoints: return 401 JSON if session missing
 ```
 Rate limit `/auth/login` and `/auth/register` via `limiter` from `backend/extensions.py`.
 
-### Frontend Tasks
+### Template Tasks
 
-#### 1.4 Routes
-Add React Router. Route map:
+#### 1.4 Page Routes (`backend/api/pages/routes.py`)
+```python
+GET /       → redirect to /app if session active, else /login
+GET /login  → render auth/login.html
+GET /register → render auth/register.html
+GET /app    → render app/index.html  [require_auth]
 ```
-/              → redirect based on auth state
-/login         → <Login />
-/register      → <Register />
-/app           → <ProtectedRoute><App /></ProtectedRoute>
+
+#### 1.5 `backend/templates/base.html`
+Include in `<head>`:
+```html
+<script src="https://unpkg.com/htmx.org@2/dist/htmx.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+<link rel="stylesheet" href="https://cdn.tailwindcss.com">
 ```
+Layout: nav bar with username + logout button (if session active), `{% block content %}`.
 
-#### 1.5 `authStore.ts` (Zustand)
-```ts
-interface AuthState {
-  accessToken: string | null
-  user: UserProfile | null
-  setTokens(access: string, user: UserProfile): void
-  clearAuth(): void
-}
+#### 1.6 `backend/templates/auth/login.html`
+Fields: identifier (label: "Username or Email"), password (Alpine.js show/hide toggle).
+```html
+<form hx-post="/auth/login" hx-target="#form-error" hx-swap="innerHTML">
+  <div id="form-error"></div>
+  ...
+</form>
 ```
-Persist `accessToken` to `sessionStorage` (not `localStorage` — clears on tab close).
+On success: server sends `HX-Redirect: /app`. On failure: server returns error HTML fragment.
 
-#### 1.6 `api/client.ts` Interceptors
-- Attach `Authorization: Bearer <token>` to every request.
-- On `401`: call `POST /auth/refresh` once, update store, retry original request.
-- On second `401`: clear auth, redirect to `/login`.
-
-#### 1.7 Login Page
-Fields: identifier (label: "Username or Email"), password.
-On success: store token, navigate to `/app`.
-Show field-level errors from API.
-
-#### 1.8 Register Page
-Fields: full_name, username, email, phone (optional), password, confirm_password.
-Client-side validation before submit (match password, regex checks).
-On success: auto-login (store token from register response), navigate to `/app`.
+#### 1.7 `backend/templates/auth/register.html`
+Fields: full_name, username, email, phone (optional), password + confirm_password (both with show/hide).
+Client-side password-match validation via Alpine.js before HTMX submit.
+On success: server sets session, sends `HX-Redirect: /app`.
 
 ### Unit Tests
 
 #### Backend — `tests/unit/test_auth.py`
 ```python
-# Fixtures in conftest.py:
-#   app_client: Flask test client with in-memory/test-DB
-#   valid_user_payload: dict with all required fields
+# Key fixtures in conftest.py:
+#   client: Flask test client (TestingConfig — no Redis session, cookie session)
+#   authed_client: client with session['user_id'] pre-set via session_transaction()
+#   valid_user_payload: dict with all required registration fields
+#
+# Mocking pattern — patch the repository singleton, NOT raw DB helpers:
+#   REPO = 'backend.repositories.user_repository.user_repo'
+#   mocker.patch(f'{REPO}.exists_by_username', return_value=False)
+#   mocker.patch(f'{REPO}.create', return_value=_USER)  # _USER is a User domain object
 
-def test_register_success(app_client, valid_user_payload): ...
-def test_register_duplicate_username_returns_409(app_client, valid_user_payload): ...
-def test_register_duplicate_email_returns_409(app_client, valid_user_payload): ...
-def test_register_weak_password_returns_422(app_client): ...
-def test_register_invalid_email_returns_422(app_client): ...
-def test_login_success_returns_access_token(app_client, seeded_user): ...
-def test_login_by_email_succeeds(app_client, seeded_user): ...
-def test_login_wrong_password_returns_401(app_client, seeded_user): ...
-def test_login_unknown_user_returns_401(app_client): ...
-def test_refresh_issues_new_token(app_client, logged_in_client): ...
-def test_refresh_with_rotated_token_returns_401(app_client, logged_in_client): ...
-def test_logout_invalidates_refresh_token(app_client, logged_in_client): ...
-def test_protected_route_without_token_returns_401(app_client): ...
-def test_protected_route_with_valid_token_succeeds(app_client, logged_in_client): ...
-def test_rate_limit_on_login(app_client): ...
+def test_register_success_redirects(client, valid_user_payload, mocker): ...          # 302
+def test_register_success_sets_session(client, valid_user_payload, mocker): ...        # sess['user_id']
+def test_register_htmx_returns_204_with_hx_redirect(client, valid_user_payload, mocker): ...
+def test_register_duplicate_username_returns_409(client, valid_user_payload, mocker): ...
+def test_register_duplicate_email_returns_409(client, valid_user_payload, mocker): ...
+def test_register_weak_password_returns_422(client): ...
+def test_register_invalid_email_returns_422(client): ...
+def test_register_invalid_username_returns_422(client): ...
+def test_register_invalid_phone_returns_422(client): ...
+def test_register_missing_full_name_returns_422(client): ...
+def test_login_success_redirects(client, mocker): ...
+def test_login_success_sets_session(client, mocker): ...
+def test_login_htmx_returns_204_with_hx_redirect(client, mocker): ...
+def test_login_by_email_succeeds(client, mocker): ...
+def test_login_wrong_password_returns_401(client, mocker): ...
+def test_login_unknown_user_returns_401(client, mocker): ...
+def test_login_missing_fields_returns_422(client): ...
+def test_logout_clears_session(authed_client): ...
+def test_logout_without_session_still_redirects(client): ...
+def test_logout_htmx_returns_204_with_hx_redirect(authed_client): ...
+def test_me_without_session_returns_401(client): ...
+def test_me_with_session_returns_profile(authed_client, mocker): ...
+def test_me_user_not_found_returns_401(authed_client, mocker): ...
+def test_rate_limit_on_login(client): ...
 ```
 
-#### Frontend — `src/pages/Login.test.tsx`
-```ts
-test('renders identifier and password fields')
-test('shows validation error for empty submit')
-test('calls login API with correct payload')
-test('stores token and redirects on success')
-test('displays API error message on failure')
-test('links to register page')
-```
-
-#### Frontend — `src/pages/Register.test.tsx`
-```ts
-test('renders all required fields')
-test('validates password confirmation mismatch')
-test('validates username format')
-test('submits correct payload to register API')
-test('auto-logs in and redirects on success')
-test('shows field-level server errors')
-```
-
-#### Frontend — `src/hooks/useAuth.test.ts`
-```ts
-test('initial state has null token and user')
-test('setTokens updates store')
-test('clearAuth resets store')
-test('401 response triggers refresh then retry')
-test('failed refresh redirects to login')
+#### Page Routes — `tests/unit/test_pages.py`
+```python
+def test_index_redirects_unauthenticated_to_login(client): ...
+def test_index_renders_for_authenticated_user(authed_client): ...
+def test_login_page_returns_200(client): ...
+def test_register_page_returns_200(client): ...
+def test_app_page_requires_auth_redirects_to_login(client): ...
+def test_app_page_returns_200_when_authenticated(authed_client): ...
+def test_login_page_redirects_already_authenticated(authed_client): ...
+def test_register_page_redirects_already_authenticated(authed_client): ...
 ```
 
 ### E2E Tests — `e2e/auth.spec.ts`
 ```ts
-test('user can register with valid data')
-test('register with existing username shows error')
+test('user can register with valid data and is redirected to /app')
+test('register with existing username shows inline error')
 test('user can log in with username')
 test('user can log in with email')
-test('wrong password shows error')
-test('logged-out user redirected from /app to /login')
+test('wrong password shows inline error')
+test('unauthenticated user redirected from /app to /login')
 test('user can log out and cannot access /app')
-test('session persists on page reload')
+test('session cookie persists across page reloads')
 ```
 
 ---
@@ -1247,18 +1236,741 @@ Every PR triggers `.github/workflows/ci.yml`:
 │  (flake8, mypy)                               │         │
 │                                               ▼         │
 │  test-backend  ──────────────────────────► all-pass?   │
-│  (pytest --cov=. --cov-fail-under=80)         │         │
-│                                               │         │
-│  lint-frontend ──────────────────────────────┤         │
-│  (eslint, tsc --noEmit)                       │         │
-│                                               │         │
-│  test-frontend ──────────────────────────────┤         │
-│  (vitest --coverage --coverage-threshold=80)  │         │
+│  (pytest --cov=backend --cov-fail-under=80)   │         │
 │                                               │         │
 │  e2e           ──────────────────────────────┘         │
 │  (playwright, docker-compose up, run specs)             │
 └─────────────────────────────────────────────────────────┘
 ```
 
-Coverage thresholds: **80% line coverage** for both backend and frontend.
-E2E smoke: runs full-flow spec; individual specs run per-phase branch.
+No separate frontend lint or test jobs — Flask/Python linting covers all application code. Tailwind, HTMX, and Alpine.js are CDN-loaded and have no local build artefacts to lint.
+
+Coverage threshold: **80% line coverage** for backend (agent, LLM, and unimplemented blueprint code is excluded via `.coveragerc`).
+
+---
+
+## Phase 7 — 3-Pane UI + Sessions + Chat + News + Discuss / Learn More (`feature/three-pane-ui`)
+
+> **Status:** ✅ shipped — but with a different architecture than originally planned.
+>
+> **Original plan:** Every AI response would pass through a Google ADK `SequentialAgent` with three sub-agents (Research → Fact Check → Editor) before reaching the user.
+>
+> **What actually shipped:** the unified ADK pipeline was abandoned in favour of a simpler, more direct architecture (see `ARCHITECTURE.md §25`). Each surface now has its own purpose-built layer:
+>
+> | Surface | Implementation |
+> |---------|---------------|
+> | Chat (`POST /chat`) | LangGraph ReAct agent — single `StateGraph` with `agent` + `tools` nodes (DeepSeek via OpenRouter) |
+> | Explore / Learn More (`POST /news/discuss`, `POST /sessions/<id>/learn-more`) | Direct DeepSeek call in `_run_discussion_pipeline()` — no LangGraph traversal; first exchange written into checkpoint via `update_state` |
+> | Hourly news curation | DeepSeek call in `curate_with_ai()` — re-orders RSS articles by importance |
+> | Fact-Check button | Single `google-genai` call with native `GoogleSearch` grounding — Gemini searches Google and produces the verdict JSON in one call; completely separate from chat/discuss |
+>
+> **Why the change:**
+> - LangGraph reverted to a single ReAct agent for chat — the multi-agent pipeline was overkill for conversational replies and added latency without quality wins.
+> - The "fact-check" idea moved out of the chat hot-path and into a user-initiated `[Fact Check]` button on news cards, where Google's native `google_search` tool + Gemini gives genuinely verifiable claims with sources.
+> - Sectioned responses for Explore / Learn More are produced by a single direct LLM call — the structured-JSON validation already prevents malformed output, and a multi-stage editor pass was not necessary in practice.
+
+### Goal
+Deliver the full working application: collapsible sidebar with hierarchical session tree, AI chat in the centre pane (always-visible input — auto-creates session on first message), and a news panel on the right with three-tab categories and per-card `[Read article]`, `[Explore]`, `[Fact Check]` buttons.
+
+### Current State (start of Phase 7)
+- ✅ Phase 1 (auth) complete — register, login, logout, E2E green
+- ✅ `backend/api/chat/service.py` — `send_message()`, `get_or_create_session()`, `auto_title_session()` implemented
+- ✅ `backend/api/news/` — service, cache, feeds all implemented
+- ✅ `backend/agent/prompts.py` — DISCUSSION_PROMPT, LEARN_MORE_PROMPT, MCQ_GENERATION_PROMPT all defined
+- ❌ DB migrations 002–005 missing
+- ❌ `backend/api/sessions/routes.py` + `service.py` — stubs only
+- ❌ `backend/api/discuss/routes.py` + `service.py` — stubs only
+- ❌ `backend/api/quiz/routes.py` + `service.py` + `generator.py` — stubs only
+- ❌ `backend/agent/pipeline.py` (Google ADK fact-check) — does not exist
+- ❌ All templates — placeholder dashboard only, no 3-pane layout
+
+### New Files
+
+#### Backend
+```
+backend/migrations/002_chat_sessions.sql
+backend/migrations/003_news_cache.sql
+backend/migrations/004_mcq_attempts.sql
+backend/migrations/005_session_hierarchy.sql
+backend/api/sessions/routes.py
+backend/api/sessions/service.py
+backend/api/discuss/routes.py
+backend/api/discuss/service.py
+backend/api/quiz/routes.py
+backend/api/quiz/service.py
+backend/api/quiz/generator.py
+backend/agent/pipeline.py
+backend/agent/quiz_agent.py
+```
+
+#### Templates & Static
+```
+backend/templates/app/index.html          ← full 3-pane layout (replaces placeholder)
+backend/templates/learn/session.html      ← /learn/<id> with knowledge tree right pane
+backend/templates/partials/session_list.html
+backend/templates/partials/message.html
+backend/templates/partials/sectioned_message.html
+backend/templates/partials/news_panel.html
+backend/templates/partials/knowledge_tree.html
+backend/templates/partials/quiz_section.html
+backend/static/app.js                     ← extended with sidebar toggle, chat, quiz logic
+```
+
+### Backend Implementation Tasks
+
+#### 7.1 DB Migrations
+
+**002_chat_sessions.sql**
+```sql
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID REFERENCES users(id) ON DELETE CASCADE,
+    thread_id       VARCHAR(255) UNIQUE NOT NULL DEFAULT gen_random_uuid()::text,
+    title           VARCHAR(255),
+    session_type    VARCHAR(20) NOT NULL DEFAULT 'regular',
+    parent_session_id UUID REFERENCES chat_sessions(id),
+    root_session_id   UUID REFERENCES chat_sessions(id),
+    depth_level       INTEGER NOT NULL DEFAULT 0,
+    topic             VARCHAR(500),
+    news_article_id   VARCHAR(20),
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW(),
+    last_message_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_last ON chat_sessions(user_id, last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_parent    ON chat_sessions(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_root      ON chat_sessions(root_session_id);
+```
+
+**003_news_cache.sql** — news_cache table (existing design from §4.4)
+
+**004_mcq_attempts.sql** — mcq_attempts with scope_sessions + relearn_cache (§21)
+
+**005_session_hierarchy.sql** — no-op (already merged into 002 above)
+
+#### 7.2 Sessions API (`backend/api/sessions/`)
+
+**service.py**
+- `create_session(user_id, session_type, parent_id, topic, news_article_id) → dict`
+- `list_sessions(user_id) → list[dict]` — includes hierarchy columns
+- `get_session(user_id, session_id) → dict | None`
+- `rename_session(user_id, session_id, title) → None` — 403 on not-owned
+- `delete_session(user_id, session_id) → None` — 403 on not-owned
+- `get_messages(user_id, session_id) → list[dict]` — replays LangGraph state
+
+**routes.py** — Blueprint('/sessions')
+```
+POST   /sessions                    → create_session()
+GET    /sessions                    → list_sessions()
+PATCH  /sessions/<id>               → rename_session()
+DELETE /sessions/<id>               → delete_session()
+GET    /sessions/<id>/messages      → get_messages()
+GET    /sessions/partial            → render partials/session_list.html (HTMX)
+GET    /sessions/<id>/messages/partial → render partials/message.html list (HTMX)
+GET    /sessions/<id>/tree          → get_tree() JSON
+```
+
+#### 7.3 Discuss API (`backend/api/discuss/`)
+
+**service.py**
+- `news_discuss(user_id, article_id, title, summary, link) → dict`
+  1. Create `news_discussion` session row (set root_session_id = self.id)
+  2. Run pipeline with article context → parse sectioned JSON
+  3. Store first message in LangGraph checkpoint
+  4. Return `{session_id, title, first_response}`
+- `create_learn_more(user_id, parent_session_id, topic) → dict`
+  1. Verify ownership + load parent row
+  2. Create `learn_more` session (depth + 1)
+  3. Run pipeline with topic → sectioned JSON first response
+  4. Return `{session_id, title}`
+- `get_tree(user_id, session_id) → list[dict]`
+
+**routes.py** — register on main Blueprint
+```
+POST  /news/discuss                       → news_discuss()
+POST  /sessions/<id>/learn-more           → create_learn_more()
+GET   /sessions/<id>/tree                 → get_tree()
+GET   /sessions/<id>/tree/partial         → render partials/knowledge_tree.html (HTMX)
+```
+
+#### 7.4 Chat Service (`backend/api/chat/`)  ✅ shipped
+
+`send_message()` flow (no ADK pipeline — direct LangGraph call):
+- Always invokes the LangGraph ReAct agent (`backend/agent/graph.py`)
+- For a brand-new session, the system prompt includes the top 5 cached AI headlines so the agent has fresh context
+- The agent may call `get_latest_ai_news` mid-conversation via the `tools` node
+- Plain markdown response is returned and appended via HTMX `beforeend` swap on `#messages`
+- Always-visible chat input bar — sending a message with no `session_id` auto-creates a `regular` session before delivering the first turn
+
+Routes:
+```
+POST /chat                              → send_message() — returns rendered message partial
+GET  /sessions/<id>/messages/partial    → renders partial HTML message list
+```
+
+#### 7.5 Discuss Service (`backend/api/discuss/`)  ✅ shipped — direct LLM, not ADK
+
+`_run_discussion_pipeline()` in `backend/api/discuss/service.py` makes a **direct DeepSeek call** (no LangGraph graph traversal). The flow:
+1. Build the prompt — `DISCUSSION_PROMPT` (Explore from a news article) or `LEARN_MORE_PROMPT` (Learn More from a section topic)
+2. Single DeepSeek call via `build_llm_client()`
+3. Validate the returned sectioned JSON (`type=sectioned`, `intro`, `sections[]`, `outro`)
+4. Write the first user message + AI response into the LangGraph checkpoint via `update_state` so subsequent turns can use Layer 3 (the chat ReAct agent) with full history
+5. Return `{session_id, title, first_response}`
+
+Routes:
+```
+POST /news/discuss                       → news_discuss() — sectioned first response from article
+POST /sessions/<id>/learn-more           → create_learn_more() — sectioned first response from topic
+GET  /sessions/<id>/tree                 → get_tree()
+```
+
+#### 7.6 Gemini Fact-Check Pipeline (`backend/agent/pipeline.py`)  ✅ shipped (rewritten in Phase 9)
+
+A single `google-genai` API call with native `GoogleSearch` grounding — completely separate from chat/discuss. Gemini searches Google automatically during generation and returns structured verdict JSON in one call. Source URLs are extracted from `grounding_metadata.grounding_chunks` and merged into the claim objects.
+
+Triggered only by `POST /news/fact-check`. Requires `GOOGLE_API_KEY` — without it returns a graceful error card. `[Fact Check]` button is hidden server-side for research/preprint sources (ArXiv, bioRxiv, HuggingFace Blog, etc.) where web-verifiable claims don't exist.
+
+`FACT_CHECK_PROMPT` lives as a module-level constant in `pipeline.py`. `NEWS_CURATION_PROMPT` lives in `backend/agent/prompts.py`.
+
+#### 7.7 Hourly News Curation (`backend/api/news/cache.py`)  ✅ shipped
+
+After each RSS fetch in the `fetch_and_cache` APScheduler job, `curate_with_ai()` calls DeepSeek with `NEWS_CURATION_PROMPT` to select up to 10 important articles for a general educated audience. Selected articles are tagged `_curated: True` and shown first (starred in the UI); the remainder are sorted newest-first and appended. The `_curated` badge is only applied when at least one article was not selected — if all articles are selected (small feed), no badge is shown. The `/news/partial` route caps the list at **15 articles** before rendering. On any LLM failure the original RSS order is preserved — no service interruption.
+
+### Frontend Implementation Tasks
+
+#### 7.7 Three-Pane Layout — `backend/templates/app/index.html`
+
+Full-height layout using Tailwind flex:
+```html
+<div class="flex h-screen overflow-hidden" x-data="appState()">
+  <!-- LEFT SIDEBAR -->
+  <aside class="..." :class="sidebarOpen ? 'w-64' : 'w-0'" ...>
+    ...sidebar contents (HTMX-loaded session list)...
+  </aside>
+  
+  <!-- CENTRE PANE -->
+  <main class="flex flex-col flex-1 min-w-0 overflow-hidden">
+    ...chat messages + input bar...
+  </main>
+
+  <!-- RIGHT PANE -->
+  <aside class="w-80 flex-shrink-0 border-l ...">
+    ...news panel (HTMX-loaded)...
+  </aside>
+</div>
+```
+
+Alpine.js `appState()` in `app.js`:
+- `sidebarOpen` — persisted in `localStorage`
+- `activeSessionId` — currently active chat
+- `loadSession(id)` — HTMX-triggered session switch
+
+#### 7.8 Session List Partial — `partials/session_list.html`
+
+Groups by Today / Yesterday / This Week / Older. Renders hierarchy:
+- `regular` sessions: plain title
+- `news_discussion` sessions: `📰` prefix, collapsible children
+- `learn_more` sessions: `⚡` prefix, indented `depth * 16px`
+
+Loaded via `hx-get="/sessions/partial" hx-trigger="load"` from the left sidebar.
+
+#### 7.9 Chat Interface — messages + input bar
+
+Messages loaded: `hx-get="/sessions/{id}/messages/partial" hx-trigger="load"` on session select.
+
+Submit: `hx-post="/chat" hx-target="#messages" hx-swap="beforeend"`
+
+After submit: server returns either:
+- `partials/message.html` (plain response)
+- `partials/sectioned_message.html` (pipeline response)
+
+#### 7.10 Sectioned Message Partial — `partials/sectioned_message.html`
+
+Each section card rendered with Alpine.js state `{loading: false, opened: false}`:
+- **[Explore →]**: `hx-post="/sessions/{id}/learn-more"`, on success `window.open('/learn/{new_id}', '_blank')`, button becomes disabled with ✓
+- **[Quiz]**: `hx-post="/chat/quiz-section" hx-target="#quiz-{section_id}" hx-swap="innerHTML"`, inline MCQ cards appear below section
+
+#### 7.11 News Panel Partial — `partials/news_panel.html`
+
+3-tab group (Alpine.js local state `{tab: 'ai'}`). Internal cache keys remain `ai`/`programming`/`political`; UI labels are **AI / Dev / World**:
+```html
+<div x-data="{tab: 'ai'}">
+  <button @click="tab='ai'"          :class="...">AI</button>
+  <button @click="tab='programming'" :class="...">Dev</button>
+  <button @click="tab='political'"   :class="...">World</button>
+
+  <div x-show="tab==='ai'" hx-get="/news/partial?category=ai" hx-trigger="intersect once"></div>
+  ...
+</div>
+```
+
+Each article card (redesigned layout):
+- Header row: source · relative date
+- Title (plain text)
+- Description (2–3 line summary)
+- Action row with three buttons:
+  - `[Read article]` — opens article URL in a new tab (`rel="noopener noreferrer"`)
+  - `[Explore]` — `hx-post="/news/discuss"`, on success sets active session and renders the sectioned first_response in the chat pane
+  - `[Fact Check]` — `hx-post="/news/fact-check"`, runs the ADK Search → Verdict pipeline; verdict card swaps in below the article card
+
+### Phase 7 Completion Criteria
+- [x] Sidebar opens/closes with smooth transition; state persists in `localStorage`
+- [x] Sidebar shows hierarchical sessions (regular, 📰 news_discussion, ⚡ learn_more) with expand/collapse on `news_discussion` roots
+- [x] Always-visible chat input — sending a message with no active session auto-creates a `regular` session
+- [x] Chat sends a message and receives a plain markdown response from the LangGraph ReAct agent
+- [x] LangGraph agent can call `get_latest_ai_news` mid-conversation; first message of a new session injects top 5 cached headlines into the system prompt
+- [x] Right pane shows News panel with 4 working tabs (AI / Dev / World / Bio)
+- [x] Each article card has `[Read article]`, `[Explore]`, and `[Fact Check]` buttons — Fact Check hidden for research/preprint sources
+- [x] Hourly news curation re-ranks RSS articles by importance via DeepSeek
+- [x] `[Explore]` creates a `news_discussion` session and renders the sectioned first response (direct DeepSeek call)
+- [x] Sectioned response cards have a working `[Explore]` button that opens `/learn/<id>` in a new tab
+- [x] `/learn/<id>` route uses the same 3-pane layout
+- [x] `[Fact Check]` calls Gemini with Google Search grounding and renders a verdict card in-place
+- [x] `[Fact Check]` returns a graceful error card when `GOOGLE_API_KEY` is unset
+
+---
+
+## Phase 8 — UX Polish, Inline Quiz & Adaptive Follow-up (`feature/auth`)
+
+> **Status:** ✅ shipped on the `feature/auth` branch.
+
+### Goal
+Improve loading feedback, prevent double-submission, move the quiz inline, add an adaptive follow-up quiz, and add a visual active-session indicator in the sidebar.
+
+### Features Shipped
+
+#### 8.1 Button Disable During Content Loads
+
+A single Alpine boolean `contentBusy` in `appState()` gates both the **Send** and **🧠 Check Knowledge** buttons. It is set `true`/`false` by:
+- HTMX `htmx:beforeRequest` / `htmx:afterRequest` listeners on `document.body` when the target is `#chat-messages` (declarative chat send).
+- Manual calls to `window._setContentBusy(true/false)` inside `exploreSection()`, `generateSectionQuiz()`, `generateQuizForSession()`, and sidebar session-switch handlers.
+
+`chatLoading` tracks the chat form spinner separately. Both are OR'd in the `:disabled` binding.
+
+**Note (Phase 13):** News card Explore (`discussArticle()`) was deliberately moved out of the `contentBusy` scope. It runs as a background fetch and only controls its own per-card `exploreLoading` spinner — the Send button is never disabled by a news card action.
+
+#### 8.2 News Panel Loading Overlay
+
+Alpine `newsPanelLoading` boolean; HTMX body listeners detect requests targeting `#right-panel`. An absolutely-positioned overlay (`z-20`, `backdrop-blur`) covers the right pane with a spinner while news is fetching — existing content remains visible.
+
+**Templates changed:** `backend/templates/app/index.html` — added `relative` class on right `<aside>` + loading overlay `<div>`.
+
+#### 8.3 Cache `_age_hours` Fix
+
+`_age_hours` is computed at fetch time and must not be persisted in Redis (the frozen value becomes stale). Fixed in:
+- `backend/api/news/cache.py` — `set_cache()` strips the field before `r.setex`.
+- `backend/api/news/service.py` — `get_topic_news()` strips the field before both `r.setex` calls (hit and fallback paths).
+
+#### 8.4 Inline Quiz in `#chat-messages`
+
+The quiz no longer opens in a new tab. Clicking **🧠 Check Knowledge**:
+1. `POST /quiz/generate {session_id}` → `{attempt_id, quiz_session_id}`
+2. `htmx.ajax('GET', '/quiz/{attempt_id}/partial', { target: '#chat-messages', swap: 'innerHTML' })`
+3. `partials/quiz_inline.html` is rendered with `x-data="quizStateInline('qdata-{attempt_id}')"`.
+4. The outer quiz div gets class `knr-quiz-root` — used by `htmx:afterSettle` to detect whether a quiz is active.
+
+`quiz.js` changes:
+- `quizStateInline()` / `quizStateFullPage()` pass `raw.session_id` as new `parentSessionId` param.
+- `quizState()` gains `parentSessionId` field.
+- `_dispatchViewState()` method dispatches `quiz-view-changed` CustomEvent on init and after submit.
+- `retryQuiz()` uses `htmx.ajax(..., { target: '#chat-messages', swap: 'innerHTML' })` for inline retry.
+
+#### 8.5 Quiz View State in `appState()`
+
+`appState().init()` listens for `quiz-view-changed`:
+```js
+window.addEventListener('quiz-view-changed', (e) => {
+  this.quizViewState = e.detail;  // {isQuiz, attemptId, quizSessionId, parentSessionId, submitted, score}
+});
+```
+
+`htmx:afterSettle` on `#chat-messages` clears `quizViewState` if no `.knr-quiz-root` is present (uses `setTimeout(..., 0)` to let Alpine initialise first).
+
+Check Knowledge button disable rule: `quizViewState && !quizViewState.submitted` — tooltip: "Submit the quiz first".
+
+Button label: "🧠 Check Knowledge" when no quiz or quiz submitted; "🧠 Follow-up Quiz" when `quizViewState?.submitted`.
+
+#### 8.6 Adaptive Follow-up Quiz
+
+**`POST /quiz/generate-followup`** — body: `{attempt_id}`
+
+Service (`backend/api/quiz/service.py` — `generate_quiz_followup()`):
+1. Loads completed attempt (`completed_at IS NOT NULL`).
+2. Builds attempt summary: `"Q: {text}\n  User: {selected_option} → CORRECT/WRONG (correct: {correct_option})"` per question.
+3. Calls `generate_mcq_followup(attempt_summary)` in `generator.py`.
+4. Creates new `mcq_attempts` row.
+5. Creates sibling `chat_session` (same `parent_session_id` as the source session) with title `"Quiz: {source_title} (follow-up)"`.
+6. Returns `{attempt_id, quiz_session_id, questions, session_id}`.
+
+`MCQ_FOLLOWUP_PROMPT` in `backend/agent/prompts.py`:
+- 8 new questions; prioritise wrong-answered concepts at deeper level.
+- For correct answers: probe related/adjacent ideas.
+- No verbatim question reuse. Technical concepts only.
+
+Frontend: `window.generateFollowupQuiz(attemptId, parentSessionId, onLoading, onDone)` in `app.js` — called from `generateQuiz()` when `quizViewState.submitted` is true.
+
+#### 8.7 Sidebar Green Dot Active Indicator
+
+**`partials/session_list.html`** changes:
+- Each `<a>` gets `data-session-id="..."`, `class="relative ... pr-5 min-w-0"`.
+- A `.knr-dot hidden absolute right-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none` `<span>` is inserted inside each `<a>`.
+- Collapse toggle: `@click.stop="open = !open; $nextTick(() => window._reapplyActiveDot && window._reapplyActiveDot())"`.
+
+**`window._reapplyActiveDot()`** in `app.js`:
+1. Reset: hide all `.knr-dot` spans; remove `bg-gray-800 text-white` from all session links.
+2. Find active link by `data-session-id`.
+3. Mark active link with `bg-gray-800 text-white`.
+4. If active link is visible (checked via `_isSessionLinkVisible` — walks `node.style.display` up the DOM), place `bg-green-400` dot on it.
+5. Otherwise walk `[x-data]` ancestors to find nearest visible parent row; place `bg-green-300` (softer) dot on that.
+
+**`_isSessionLinkVisible(el, container)`** — walks ancestors checking `node.style.display === 'none'` (Alpine `x-show` sets inline style). More reliable than `offsetParent` for Alpine-managed visibility.
+
+Triggered from: `setActiveSession()`, `htmx:afterSettle` on `#session-list`, and collapse-toggle clicks.
+
+### Items Deferred from the Original Phase 7 Plan
+The following were specified in the original plan but were **not shipped** — they were superseded by simpler designs or moved to a later phase:
+
+- ❌ Single ADK `SequentialAgent` covering every chat reply (Research → Fact Check → Editor) — replaced by the layered design in `ARCHITECTURE.md §25`. The chat path uses LangGraph; the on-demand `[Fact Check]` button uses a direct `google-genai` call with Google Search grounding (no ADK).
+- ❌ Inline per-section `[Quiz]` button on sectioned responses (`POST /chat/quiz-section`, `quiz_agent.py`) — not implemented. MCQ generation remains a separate full-page quiz flow (Phase 4 / hierarchical quiz in Phase 6).
+- ❌ `confidence` field on each section, threshold-based section dropping — not implemented. Section validation is structural only (intro / sections / outro / learn_more_topic).
+
+---
+
+## Phase 9 — Embedding-Based Topic News (semantic search upgrade)
+
+**Branch:** `feature/auth` (current)
+
+### 9.1 Motivation
+
+The previous topic-news implementation used keyword matching with a hardcoded `_STOPWORDS` set and a proportional `min_score` threshold. This produced false positives (biology articles in an AI topic, "bug spray" matching a "2026 Manufacturing Roadmap" via year extraction) and missed semantically related articles that used different vocabulary. The root cause was structural — string matching cannot represent meaning.
+
+### 9.2 Architecture Overview
+
+Three components work together:
+
+```
+APScheduler (_refresh_all job, every ~1.5 h)
+  └─ fetch ALL_FEEDS → embed_articles() → Redis ARTICLE_EMBED_KEY (TTL 1 h)
+
+GET /news/topic-partial
+  └─ service.get_topic_news()
+       └─ check Redis topic result cache (TTL 30 min / 10 min)
+            └─ cache miss → fetch_topic_news()
+                 └─ load ARTICLE_EMBED_KEY from Redis (or embed fresh on miss)
+                      └─ weighted_scores() → adaptive_threshold() → mmr_rerank()
+                           └─ store result in topic result cache → return
+```
+
+### 9.3 Files Changed
+
+| File | Change |
+|------|--------|
+| `backend/api/news/embeddings.py` | Complete rewrite — model loader, `embed_articles()`, `weighted_scores()`, `adaptive_threshold()`, `mmr_rerank()` |
+| `backend/api/news/cache.py` | `fetch_topic_news()` rewritten; `refresh_article_embeddings()` added; `_collect_all_articles()` extracted as helper |
+| `backend/core/scheduler.py` | `_refresh_all()` now calls `refresh_article_embeddings()` after category feed refresh |
+| `requirements.txt` | Added `sentence-transformers>=2.7` |
+| `docs/ARCHITECTURE.md` | §3.5, §6.2, §6.3 (new), §25.1, §26 updated |
+
+### 9.4 Improvements Implemented
+
+**1. Pre-computed article embeddings (scheduler)**
+- `refresh_article_embeddings()` fetches ALL_FEEDS, embeds all article titles + summaries, stores as `{article + title_emb + summary_emb}` JSON in Redis.
+- Called by `_refresh_all()` — no extra RSS fetches on the hot path.
+- Topic queries load pre-computed embeddings (~5 ms Redis hit) instead of re-fetching feeds (2–5 s).
+
+**2. Separate title and summary embeddings with weighted scoring**
+- `embed_articles()` encodes title and summary independently.
+- `weighted_scores()`: `score = 0.7 × cos_sim(topic, title) + 0.3 × cos_sim(topic, summary)`.
+- Titles carry more signal; summaries add context without diluting the title match.
+
+**3. Adaptive similarity threshold**
+- `adaptive_threshold(scores, floor=0.15)` = `max(0.15, top_score × 0.6)`.
+- Replaces the fixed `_MIN_SIMILARITY = 0.25` constant.
+- Scales with match quality: strong topic → strict threshold (filters noise); niche topic → relaxed threshold (still surfaces results).
+
+**4. Maximal Marginal Relevance (MMR) re-ranking**
+- `mmr_rerank()` in `embeddings.py` implements the standard MMR algorithm.
+- Iteratively picks the next article maximising `λ × relevance − (1−λ) × max_sim_to_selected` (λ = 0.6).
+- Prevents 15 articles from the same source or sub-angle appearing in results.
+- Diversity is computed on a re-normalised weighted combination of title + summary embeddings.
+
+**5. Model version cache invalidation**
+- `MODEL_VERSION = "v1"` is embedded in the Redis key: `news:article_embeddings:all-MiniLM-L6-v2:v1`.
+- Upgrading the model requires only bumping `MODEL_VERSION` — old keys become unreachable and expire by TTL naturally. No manual cache flush needed.
+
+**6. Age recomputation on cache load**
+- `_age_hours` is recomputed from the stored `published` timestamp each time embeddings are loaded from Redis.
+- Prevents articles appearing newer than they are when the embedding store is 30–60 min old.
+
+**7. Keyword fallback**
+- `_rank_by_keywords()` is retained as a silent fallback.
+- Triggered when `sentence-transformers` fails to load (first deploy before model download, OOM, import error).
+- No crash, no user-visible error — slightly less accurate results.
+
+### 9.5 Embedding Model
+
+| Property | Value |
+|---|---|
+| Library | `fastembed` (ONNX runtime — no PyTorch, ~60 MB install) |
+| Model | `sentence-transformers/all-MiniLM-L6-v2` (SBERT, via fastembed) |
+| Dimensions | 384 |
+| Download size | ~80 MB (one-time, cached by library) |
+| Inference | CPU; ~150 ms for 150 articles (batch) |
+| API key required | No |
+| Normalisation | L2-normalised (dot product = cosine similarity) |
+
+### 9.6 Redis Memory Impact
+
+~150 articles × 2 embeddings × 384 floats × 4 bytes ≈ **460 KB** for the embedding store. Well within the `maxmemory 128mb` Docker Compose limit alongside all other keys.
+
+### 9.7 Latency Profile (after warm-up)
+
+| Operation | Before | After |
+|---|---|---|
+| Topic news (cache hit) | ~5 ms | ~5 ms (unchanged) |
+| Topic news (cache miss) | 2–5 s (feed fetch + embed) | ~20 ms (Redis load + 1 embed + MMR) |
+| First deploy (model download) | N/A | ~30 s one-time |
+| Scheduler embed refresh | N/A | ~2 s added to each `_refresh_all` cycle |
+
+---
+
+## Phase 10 — Economy & Health Tabs + Topic-News Fallback
+
+**Branch:** `feature/auth` (current)
+
+### 10.1 New News Categories
+
+Two new categories added to `backend/api/news/feeds.py` and surfaced as tabs in `news_panel.html`:
+
+| Tab label | Category key | Sources |
+|---|---|---|
+| Econ | `economy` | Reuters Business, BBC Business, The Economist, MarketWatch, Financial Times, Bloomberg, CNBC |
+| Health | `health` | BBC Health, Reuters Health, Medical News Today, WHO News, Science Daily Health, Healthline, Allure |
+
+The tab bar is now six tabs: AI · Dev · World · Bio · Econ · Health. No other code changes required — `NEWS_FEEDS` is the single source of truth for both the scheduler refresh and the ALL_FEEDS embedding store.
+
+### 10.2 Topic-News Fallback — Known Issue & Pending Fix
+
+**Problem observed:** When a user is inside a `news_discussion` session (e.g. a BBC Health article about quintuplets), the right-pane topic news panel shows AI articles instead of health-related content. Root cause: the embedding store is empty on a fresh deploy (scheduler hasn't run yet), the on-the-fly keyword fallback finds no articles matching the specific article title as a query, and `service.get_topic_news()` hard-codes a final fallback to `get_news("ai")`.
+
+**Implemented fallback chain:**
+
+```
+fetch_topic_news(topic) → results → return
+                        → empty
+                             → session has source_category → get_news(source_category)   [Case 1]
+                             → no source_category → embed(topic) vs CATEGORY_LABELS → get_news(closest)  [Case 2]
+```
+
+**Case 1 — `news_discussion` sessions (data provenance):**
+- `POST /news/discuss` now accepts `source_category` from the frontend (the active tab at time of click).
+- `news_panel.html` Explore button sends `source_category: category` in `hx-vals`.
+- `discuss/service.py` persists it with `UPDATE chat_sessions SET source_category = %s`.
+- `learn_more` children inherit `source_category` from their parent — the full session tree stays topically consistent.
+- Migration `008_source_category.sql` adds the column (`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS source_category VARCHAR(20)`).
+
+**Case 2 — `regular` sessions (zero-shot embedding classification):**
+- `CATEGORY_LABELS` dict in `embeddings.py` maps each category key to a descriptive label string.
+- `get_category_embeddings(redis_client)` computes embeddings for all labels, caches in Redis 24 h under `news:category_embeddings:…` (model + version in key for automatic invalidation on upgrade).
+- `_infer_category_by_embedding(topic)` in `service.py` embeds the topic, dot-products against label embeddings, returns highest-similarity category.
+- No hardcoded keyword lists. Tuneable by editing `CATEGORY_LABELS` strings only.
+
+---
+
+## Phase 11 — Learning Platform Prompt Redesign
+
+**Branch:** `feature/auth` (current)
+
+### 11.1 Motivation
+
+The existing AI prompts were designed for a **technical assistant** role: answer AI/ML/software questions accurately. As the product evolved into a **general learning platform** anchored in current news, three structural gaps emerged:
+
+1. **Domain lock** — `SYSTEM_PROMPT` restricts to AI, ML, and software. The news panel covers World, Bio, Econ, Health — the AI tutor must match that breadth.
+2. **No completeness guarantee** — the AI picks 3–5 sections it finds interesting, potentially missing important conceptual pillars. A learner cannot know what was omitted.
+3. **No learning progression** — sections appear in arbitrary order rather than foundational → mechanism → application → advanced.
+4. **No misconception field** — common wrong assumptions are not surfaced; learners form bad mental models silently.
+5. **Weak intro/outro** — intro does not state prerequisite knowledge; outro does not recommend an exploration order.
+
+See `ARCHITECTURE.md §27` for the full design rationale.
+
+### 11.2 Files Changed
+
+| File | Change |
+|------|--------|
+| `backend/agent/prompts.py` | All four teaching prompts rewritten; `SYSTEM_PROMPT`, `DISCUSSION_PROMPT`, `LEARN_MORE_PROMPT`, `NEWS_CURATION_PROMPT` |
+| `backend/templates/app/index.html` | Chat input placeholder updated to reflect domain breadth |
+
+### 11.3 `SYSTEM_PROMPT` Changes (Scenario 1 — Manual Chat)
+
+**Removed:**
+- "specialising in artificial intelligence, machine learning, and related technologies" domain declaration
+- Fixed bullet list of AI/ML topics
+
+**Added:**
+- Domain: any topic (science, history, technology, economics, biology, politics, mathematics, arts)
+- Completeness mandate: "Cover every major pillar at the level asked. A learner must see the complete shape of the subject. Missing a significant concept is a failure."
+- Section ordering rule: foundational → mechanism → application → advanced/edge cases
+- `misconception` field in every section schema: one sentence — the most common wrong assumption about this concept
+- Prerequisite signal in `intro`: state what background is assumed or "No prior knowledge needed"
+- Adaptive section count: 4–6 typically, up to 7 for complex multi-pillar subjects; minimum 3
+- Outro strengthened: must give concrete recommended exploration order
+
+### 11.4 `DISCUSSION_PROMPT` Changes (Scenario 2 — News Explore)
+
+**Added:**
+- Completeness mandate: "Cover every conceptual pillar this news event touches — a reader should be able to see all the concepts this event exposes"
+- `misconception` field per section
+- Section ordering: foundational → mechanism → application
+- `intro` must state which areas of knowledge this news event touches
+
+**Unchanged:**
+- Do-not-discuss rules (names, political opinions, dates as subjects)
+- News-anchored scope (not full domain — only concepts this event exposes)
+
+### 11.5 `LEARN_MORE_PROMPT` Changes (Scenario 3 — Section Explore)
+
+**Added:**
+- Breadcrumb instruction: `intro` must include "This is a deep-dive into [topic], a sub-component of [parent concept]." — prevents learners from getting lost after multiple Explore clicks
+- Completeness mandate: cover ALL sub-components of the requested concept
+- `misconception` field per section
+- Section ordering: same foundational → applied → advanced rule
+
+**Unchanged:**
+- Depth-first focus — never revisit sibling concepts from the parent response
+- `learn_more_topic` must be more specific than section title
+
+### 11.6 `NEWS_CURATION_PROMPT` Changes
+
+**Changed:** audience description expanded from "AI engineers, ML researchers, software developers" to "a general educated audience" to match the platform's broad topic coverage.
+
+### 11.7 Placeholder Text
+
+`backend/templates/app/index.html` line 148:
+
+```
+Before: placeholder="Ask anything about AI, ML, or software..."
+After:  placeholder="Ask anything — science, history, technology, economics…"
+```
+
+### 11.8 Section Schema After Phase 11
+
+```json
+{
+  "id": "s1",
+  "title": "<concept name>",
+  "content": "<2–3 sentence explanation — how it works and why it matters>",
+  "key_points": [
+    "<concrete, testable learning point>",
+    "<second learning point>",
+    "<third learning point>"
+  ],
+  "misconception": "<the single most common wrong assumption about this concept — one sentence>",
+  "learn_more_topic": "<specific sub-topic for deeper Explore follow-up>"
+}
+```
+
+The `misconception` field is new in Phase 11. Backend parsing validates its presence on sectioned responses from Scenarios 1, 2, and 3. It is displayed as a callout card below `key_points` in `sectioned_message.html`.
+
+---
+
+## Phase 12 — URL Fetch Tool (ReAct pattern)
+
+**Branch:** `feature/auth` (current)
+
+### 12.1 Motivation
+
+When a user pastes a public URL in the main chat and asks to explain it, the LangGraph agent previously had no way to read the page — it would respond from training memory only, risking outdated or hallucinated content. Phase 12 adds a `fetch_url` LangGraph tool following the industry-standard ReAct pattern used by ChatGPT browsing, Perplexity, and Claude web search.
+
+No third-party reader service is used. Plain `requests` + `BeautifulSoup4` is sufficient for the common case (news articles, Wikipedia, blog posts, documentation, GitHub READMEs). JS-rendered SPAs without static HTML will return little or no content — this is a known and accepted limitation.
+
+### 12.2 Files Changed
+
+| File | Change |
+|------|--------|
+| `backend/agent/tools.py` | Added `fetch_url` tool |
+| `backend/agent/graph.py` | Added `fetch_url` to tools list |
+| `requirements.txt` | Added `requests`, `beautifulsoup4` |
+
+### 12.3 Tool Behaviour
+
+```
+User: "explain https://example.com/article"
+        │
+        ▼
+LangGraph agent (DeepSeek) sees URL, calls fetch_url(url)
+        │
+        ▼
+requests.get(url, timeout=8)
+BeautifulSoup strips script/style/nav/footer/header/aside
+Extracts <main> or <article> or <body> text
+Truncates to 4 000 chars
+        │
+  ┌─────┴─────────────────────────────────┐
+  │ success                               │ failure
+  ▼                                       ▼
+page text returned to agent        descriptive error string
+        │                          agent notes failure in response
+        ▼
+DeepSeek generates sectioned structured response
+grounded in actual page content
+```
+
+### 12.4 Error Handling
+
+| Failure | Returned string |
+|---------|----------------|
+| Timeout (>8 s) | "Request timed out — server took too long" |
+| HTTP 4xx/5xx | "HTTP {status} error fetching {url}" |
+| Paywall / login wall | "<100 chars extracted — page may require login" |
+| JS-only page | "<100 chars extracted — page may be JS-rendered" |
+| Any other exception | "Could not fetch {url}: {reason}" |
+
+The agent uses the error string as context and tells the user why it couldn't read the page, rather than silently hallucinating content.
+
+---
+
+## Phase 13 — News Panel & Quiz UX Polish
+
+**Branch:** `feature/auth` (current)
+
+### 13.1 Background News Explore (`discussArticle`)
+
+**Problem:** Clicking Explore on a news card fired an HTMX request with `hx-target="#chat-messages"`, which triggered the global `htmx:beforeRequest` → `contentBusy = true` → disabled the Send button for the duration of the LLM call (~5–10 s).
+
+**Fix:** Replaced the HTMX button with a JS `fetch()` call (`window.discussArticle()`). The session is created in the background; `contentBusy` is never set. On success the sidebar refreshes and a toast guides the user. The news card Explore button shows its own per-button spinner (from Alpine `exploreLoading`) without blocking any other interaction.
+
+**Files changed:**
+- `backend/static/app.js` — added `discussArticle()`, removed `onDiscussResponse()`
+- `backend/templates/partials/news_panel.html` — button converted from HTMX to `@click="discussArticle(...)"`
+- `backend/templates/partials/topic_news_panel.html` — same; button also renamed "Discuss" → "Explore"
+
+### 13.2 `newsCardState()` Alpine Component
+
+A named Alpine component (`newsCardState(articleId)`) was extracted to `app.js` and is used by both news panel templates via `x-data="newsCardState('...')"`. It replaces the inline `{exploreLoading: false, factChecking: false}` object and adds:
+
+- `alreadyExplored` — initialised from `localStorage` (`knroot_explored` JSON array, max 500 entries) on component mount
+- `markExplored()` — sets `alreadyExplored = true` and saves the article ID to `localStorage`
+
+**Visual indicator:** a small green checkmark icon appears inside the Explore button when `alreadyExplored` is true. The button remains fully clickable — users can explore an article multiple times.
+
+### 13.3 AI Top-Picks Star Badge (`_curated`)
+
+`curate_with_ai()` in `backend/api/news/cache.py` now:
+
+- Uses `n_select = min(len(articles) // 2, 5)` — selects at most 5 articles, always at most half the total, so there is always a meaningful non-curated remainder
+- Tags selected articles with `_curated: True` in the returned dict (preserved through `set_cache` since only `_age_hours` is stripped)
+
+The news panel template (`news_panel.html`) shows a gold star SVG icon before the source name and an amber card border when `article.get('_curated')` is truthy. The force-refresh bug in `/news/partial` (query param `force` was ignored — hardcoded `False`) was also fixed in this phase.
+
+### 13.4 Quiz: "Explore this topic" on Correct Answers
+
+**Problem:** Correctly answered quiz questions showed no follow-up action — users who knew an answer had no way to dive deeper without first getting something wrong.
+
+**Fix:** A new footer strip (`x-show="submitted && answers[q.id] === q.correct"`) is added to each question card in `quiz_inline.html`. It shows only the **Explore this topic** button — no explanation text, since the user already knows the answer. The button calls the existing `exploreRelearn(q.id, q.topic)` function and shares the same `relearn[q.id]` state (lazy-initialised by `_panel()`).
+
+| State | Incorrect answer | Correct answer |
+|-------|-----------------|----------------|
+| After submit | "Why was I wrong?" → explanation → Explore | Explore this topic |
+| After Explore clicked | ✓ Loaded badge | ✓ Loaded badge |
+
+**File changed:** `backend/templates/partials/quiz_inline.html` only.
