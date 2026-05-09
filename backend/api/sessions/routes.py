@@ -35,7 +35,17 @@ def list_sessions():
 def session_list_partial():
     sessions = sessions_svc.list_sessions(g.user_id)
     expand_id = request.args.get('expand', '')
-    return render_template("partials/session_list.html", sessions=sessions, expand_id=expand_id)
+
+    # Build the set of all node IDs that should start open: expand_id + every ancestor
+    open_ids: set[str] = set()
+    if expand_id:
+        parent_map = {s['id']: s.get('parent_session_id') for s in sessions}
+        cur: str | None = expand_id
+        while cur:
+            open_ids.add(cur)
+            cur = parent_map.get(cur)
+
+    return render_template("partials/session_list.html", sessions=sessions, expand_id=expand_id, open_ids=open_ids)
 
 
 @bp.patch("/sessions/<session_id>")

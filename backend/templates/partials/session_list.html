@@ -1,6 +1,7 @@
 {# partials/session_list.html — HTMX fragment, NO extends #}
-{# Variables: sessions (list of dicts; parent_session_id may be None or a UUID string), expand_id (optional str) #}
+{# Variables: sessions (list of dicts; parent_session_id may be None or a UUID string), expand_id (optional str), open_ids (optional set[str]) #}
 {%- set expand_id = expand_id if expand_id is defined else '' -%}
+{%- set open_ids = open_ids if open_ids is defined else [] -%}
 
 {%- set roots = sessions | selectattr('parent_session_id', 'none') | list -%}
 {%- set ns = namespace(children={}) -%}
@@ -27,7 +28,7 @@
 {%- set kids = children_map.get(s.id, []) -%}
 {%- set has_kids = kids | length > 0 -%}
 {%- set total_desc = kids | length -%}
-{%- set starts_open = has_kids and (s.id == expand_id) -%}
+{%- set starts_open = has_kids and (s.id in open_ids) -%}
 <div {% if has_kids %}x-data="{ open: {{ 'true' if starts_open else 'false' }} }"{% endif %} class="select-none">
 
   <div class="group relative flex items-center gap-1 px-2">

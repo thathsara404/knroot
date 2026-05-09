@@ -25,6 +25,15 @@ document.body.addEventListener('htmx:responseError', function (evt) {
   Toast.error(msg);
 });
 
+// Auto-inject the active session ID as the expand param on every session-list refresh
+// so the tree stays expanded to the current session's path after any re-render.
+document.body.addEventListener('htmx:configRequest', function (evt) {
+  var path = evt.detail.path || '';
+  if (path.startsWith('/sessions/partial') && path.indexOf('expand=') === -1 && window._activeSessionId) {
+    if (evt.detail.parameters) evt.detail.parameters['expand'] = window._activeSessionId;
+  }
+});
+
 // Post-settle hooks — runs after Alpine has initialised new DOM nodes.
 document.body.addEventListener('htmx:afterSettle', function (evt) {
   const targetId = evt.detail.target && evt.detail.target.id;
