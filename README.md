@@ -150,11 +150,11 @@ ai-agent/
 │   /sessions/*  /quiz/*           (API + HTMX routes)          │
 └────┬──────────┬──────────────┬────────────────┬──────────────┘
      │          │              │                │
- Session     LangGraph     Direct DeepSeek    Google ADK
- Auth        ReAct Agent   (Explore /         SequentialAgent
- (bcrypt +   (chat —       Learn More +       (fact-check —
-  Redis-     OpenRouter    hourly news        Gemini 2.0
-  backed)    DeepSeek)     curation)          Flash + Search)
+ Session     LangGraph     Direct DeepSeek    google-genai
+ Auth        ReAct Agent   (Explore /         (fact-check —
+ (bcrypt +   (chat —       Learn More +       Gemini 2.0 Flash
+  Redis-     OpenRouter    hourly news        + Google Search
+  backed)    DeepSeek)     curation)          grounding)
      │          │              │                │
   ┌──▼──────────▼──────────────▼────────────────▼───┐
   │       PostgreSQL 16            +    Redis 7     │
@@ -164,7 +164,7 @@ ai-agent/
   └─────────────────────────────────────────────────┘
 ```
 
-See [docs/ARCHITECTURE.md §25](docs/ARCHITECTURE.md) for the full five-layer AI architecture (RSS cache → AI curation → LangGraph chat → direct discuss pipeline → ADK fact-check).
+See [docs/ARCHITECTURE.md §25](docs/ARCHITECTURE.md) for the full five-layer AI architecture (RSS cache → AI curation → LangGraph chat → direct discuss pipeline → Gemini fact-check).
 
 ---
 
@@ -332,7 +332,7 @@ make shell-redis       # redis-cli into the Redis container
 | `OPENROUTER_API_KEY` | Yes | — | OpenRouter API key — used for chat, Explore / Learn More, and hourly news curation |
 | `OPENROUTER_MODEL` | No | `deepseek/deepseek-chat` | Any OpenRouter model ID |
 | `GOOGLE_API_KEY` | No | — | Google AI API key for the Gemini fact-check pipeline. Optional, but `[Fact Check]` returns a graceful error card if unset. Get a key at https://aistudio.google.com/apikey |
-| `FACT_CHECK_MODEL` | No | `gemini-2.0-flash` | Gemini model used by the ADK fact-check `SequentialAgent` |
+| `FACT_CHECK_MODEL` | No | `gemini-2.0-flash` | Gemini model used by the fact-check pipeline (Google Search grounding) |
 | `DATABASE_URL` | No | `postgresql://postgres:postgres@db:5432/postgres` | PostgreSQL connection |
 | `REDIS_URL` | No | `redis://redis:6379/0` | Redis connection |
 | `FLASK_ENV` | No | `production` | `development` \| `production` \| `testing` |
@@ -347,7 +347,7 @@ OPENROUTER_MODEL=anthropic/claude-sonnet-4-6 # Claude Sonnet
 OPENROUTER_MODEL=google/gemini-2.5-flash     # Gemini Flash via OpenRouter
 ```
 
-Google AI (fact-check `SequentialAgent` only):
+Google AI (fact-check pipeline only):
 ```bash
 FACT_CHECK_MODEL=gemini-2.0-flash      # default — fast, cheap
 FACT_CHECK_MODEL=gemini-2.5-flash      # more capable

@@ -34,6 +34,35 @@ NEWS_FEEDS: dict[str, list[tuple[str, str]]] = {
         ("Al Jazeera",       "https://www.aljazeera.com/xml/rss/all.xml"),
         ("NPR News",         "https://feeds.npr.org/1001/rss.xml"),
     ],
+    "biology": [
+        # Research journals / preprint servers
+        ("bioRxiv",          "https://connect.biorxiv.org/biorxiv_xml.php?subject=biology"),
+        ("PLOS Biology",     "https://journals.plos.org/plosbiology/feed/atom"),
+        ("eLife",            "https://elifesciences.org/rss/recent.xml"),
+        # News sources
+        ("Science Daily",    "https://www.sciencedaily.com/rss/plants_animals/biology.xml"),
+        ("STAT News",        "https://www.statnews.com/feed/"),
+        ("The Scientist",    "https://www.the-scientist.com/rss"),
+        ("New Scientist",    "https://www.newscientist.com/subject/biology/feed/"),
+    ],
+    "economy": [
+        ("Reuters Business", "https://feeds.reuters.com/reuters/businessNews"),
+        ("BBC Business",     "https://feeds.bbci.co.uk/news/business/rss.xml"),
+        ("The Economist",    "https://www.economist.com/finance-and-economics/rss.xml"),
+        ("MarketWatch",      "https://feeds.marketwatch.com/marketwatch/topstories/"),
+        ("Financial Times",  "https://www.ft.com/rss/home"),
+        ("Bloomberg",        "https://feeds.bloomberg.com/markets/news.rss"),
+        ("CNBC",             "https://www.cnbc.com/id/10000664/device/rss/rss.html"),
+    ],
+    "health": [
+        ("BBC Health",       "https://feeds.bbci.co.uk/news/health/rss.xml"),
+        ("Reuters Health",   "https://feeds.reuters.com/reuters/healthNews"),
+        ("Medical News Today","https://www.medicalnewstoday.com/rss/medicalnewstoday.xml"),
+        ("WHO News",         "https://www.who.int/rss-feeds/news-english.xml"),
+        ("Science Daily Health", "https://www.sciencedaily.com/rss/health_medicine.xml"),
+        ("Healthline",       "https://www.healthline.com/rss/health-news"),
+        ("Allure",           "https://www.allure.com/feed/rss"),
+    ],
 }
 
 # All feeds combined — used for topic-specific news search

@@ -10,7 +10,8 @@ MYPY  := $(VENV)/bin/mypy
         up-e2e down-e2e logs-e2e test-e2e-fresh \
         up-infra backend \
         playwright-install test-unit test-int test-e2e test \
-        lint shell-db shell-redis
+        lint shell-db shell-redis \
+        flush-cache
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,13 @@ test-e2e-fresh:
 	exit $$EXIT
 
 test: test-unit test-int
+
+# ── Dev cache management ──────────────────────────────────────────────────────
+
+flush-cache:
+	@echo "[dev] Flushing Redis news caches (news:*)..."
+	@docker compose --profile dev exec -T redis sh -c "redis-cli --scan --pattern 'news:*' | xargs -r redis-cli del"
+	@echo "[dev] Done. Caches repopulate automatically on the next request."
 
 # ── Lint ──────────────────────────────────────────────────────────────────────
 

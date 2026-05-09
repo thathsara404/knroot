@@ -68,4 +68,7 @@ def create_app(config_name: str | None = None) -> Flask:
 
     register_error_handlers(app)
 
+    from backend.core.template_filters import pub_date
+    app.jinja_env.filters["pub_date"] = pub_date
+
     return app

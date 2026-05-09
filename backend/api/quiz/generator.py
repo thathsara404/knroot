@@ -2,8 +2,17 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 
 logger = logging.getLogger(__name__)
+
+
+def _shuffle_options(question: dict) -> dict:
+    """Randomly reorder the answer options and update the correct index to match."""
+    options = list(question["options"])
+    correct_text = options[question["correct"]]
+    random.shuffle(options)
+    return {**question, "options": options, "correct": options.index(correct_text)}
 
 
 def generate_mcq(conversation_text: str, n_questions: int = 8) -> list[dict]:
@@ -24,7 +33,7 @@ def generate_mcq(conversation_text: str, n_questions: int = 8) -> list[dict]:
             parsed = json.loads(text)
             questions = parsed.get("questions", [])
             _validate(questions, n_questions)
-            return questions[:n_questions]
+            return [_shuffle_options(q) for q in questions[:n_questions]]
         except Exception as exc:
             last_exc = exc
             logger.warning("MCQ generation attempt %d failed: %s", attempt + 1, exc)
@@ -50,7 +59,7 @@ def generate_mcq_followup(attempt_summary: str, n_questions: int = 8) -> list[di
             parsed = json.loads(text)
             questions = parsed.get("questions", [])
             _validate(questions, n_questions)
-            return questions[:n_questions]
+            return [_shuffle_options(q) for q in questions[:n_questions]]
         except Exception as exc:
             last_exc = exc
             logger.warning("MCQ followup attempt %d failed: %s", attempt + 1, exc)

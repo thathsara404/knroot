@@ -1262,7 +1262,7 @@ Coverage threshold: **80% line coverage** for backend (agent, LLM, and unimpleme
 > | Chat (`POST /chat`) | LangGraph ReAct agent — single `StateGraph` with `agent` + `tools` nodes (DeepSeek via OpenRouter) |
 > | Explore / Learn More (`POST /news/discuss`, `POST /sessions/<id>/learn-more`) | Direct DeepSeek call in `_run_discussion_pipeline()` — no LangGraph traversal; first exchange written into checkpoint via `update_state` |
 > | Hourly news curation | DeepSeek call in `curate_with_ai()` — re-orders RSS articles by importance |
-> | Fact-Check button | Google ADK `SequentialAgent` with Search Agent (Gemini + native `google_search` tool) and Verdict Agent (Gemini) — runs on-demand, completely separate from chat/discuss |
+> | Fact-Check button | Single `google-genai` call with native `GoogleSearch` grounding — Gemini searches Google and produces the verdict JSON in one call; completely separate from chat/discuss |
 >
 > **Why the change:**
 > - LangGraph reverted to a single ReAct agent for chat — the multi-agent pipeline was overkill for conversational replies and added latency without quality wins.
@@ -1424,22 +1424,17 @@ POST /sessions/<id>/learn-more           → create_learn_more() — sectioned f
 GET  /sessions/<id>/tree                 → get_tree()
 ```
 
-#### 7.6 ADK Fact-Check Pipeline (`backend/agent/pipeline.py`)  ✅ shipped
+#### 7.6 Gemini Fact-Check Pipeline (`backend/agent/pipeline.py`)  ✅ shipped (rewritten in Phase 9)
 
-A `SequentialAgent` with two Gemini sub-agents — completely separate from chat/discuss:
-- **Search Agent** — Gemini 2.0 Flash + native `google_search` ADK tool. Extracts 3–4 key claims from the article and runs Google searches for each.
-- **Verdict Agent** — Gemini 2.0 Flash. Reads the search results and produces structured JSON: each claim rated `verified` / `disputed` / `unverifiable` with source links.
+A single `google-genai` API call with native `GoogleSearch` grounding — completely separate from chat/discuss. Gemini searches Google automatically during generation and returns structured verdict JSON in one call. Source URLs are extracted from `grounding_metadata.grounding_chunks` and merged into the claim objects.
 
-Triggered only by `POST /news/fact-check` (the `[Fact Check]` button on each news card). Requires `GOOGLE_API_KEY` — without it the endpoint returns a graceful error card so the rest of the app keeps working.
+Triggered only by `POST /news/fact-check`. Requires `GOOGLE_API_KEY` — without it returns a graceful error card. `[Fact Check]` button is hidden server-side for research/preprint sources (ArXiv, bioRxiv, HuggingFace Blog, etc.) where web-verifiable claims don't exist.
 
-Add to `backend/agent/prompts.py`:
-- `NEWS_CURATION_PROMPT` — DeepSeek prompt that re-ranks freshly fetched RSS articles by importance (called by `curate_with_ai()` in `backend/api/news/cache.py` once per hour)
-- `FACT_CHECK_SEARCH_PROMPT` — Search Agent system prompt
-- `FACT_CHECK_VERDICT_PROMPT` — Verdict Agent system prompt
+`FACT_CHECK_PROMPT` lives as a module-level constant in `pipeline.py`. `NEWS_CURATION_PROMPT` lives in `backend/agent/prompts.py`.
 
 #### 7.7 Hourly News Curation (`backend/api/news/cache.py`)  ✅ shipped
 
-After each RSS fetch in the `fetch_and_cache` APScheduler job, `curate_with_ai()` calls DeepSeek with `NEWS_CURATION_PROMPT` to re-rank the articles by importance for a technical audience. The cache is rewritten with the curated order. On any LLM failure the original RSS order is preserved — no service interruption.
+After each RSS fetch in the `fetch_and_cache` APScheduler job, `curate_with_ai()` calls DeepSeek with `NEWS_CURATION_PROMPT` to select up to 10 important articles for a general educated audience. Selected articles are tagged `_curated: True` and shown first (starred in the UI); the remainder are sorted newest-first and appended. The `_curated` badge is only applied when at least one article was not selected — if all articles are selected (small feed), no badge is shown. The `/news/partial` route caps the list at **15 articles** before rendering. On any LLM failure the original RSS order is preserved — no service interruption.
 
 ### Frontend Implementation Tasks
 
@@ -1524,13 +1519,13 @@ Each article card (redesigned layout):
 - [x] Always-visible chat input — sending a message with no active session auto-creates a `regular` session
 - [x] Chat sends a message and receives a plain markdown response from the LangGraph ReAct agent
 - [x] LangGraph agent can call `get_latest_ai_news` mid-conversation; first message of a new session injects top 5 cached headlines into the system prompt
-- [x] Right pane shows News panel with 3 working tabs (AI / Dev / World)
-- [x] Each article card has `[Read article]`, `[Explore]`, `[Fact Check]` buttons
+- [x] Right pane shows News panel with 4 working tabs (AI / Dev / World / Bio)
+- [x] Each article card has `[Read article]`, `[Explore]`, and `[Fact Check]` buttons — Fact Check hidden for research/preprint sources
 - [x] Hourly news curation re-ranks RSS articles by importance via DeepSeek
-- [x] `[Explore]` creates a `news_discussion` session and renders the sectioned first response (direct DeepSeek call, not ADK)
+- [x] `[Explore]` creates a `news_discussion` session and renders the sectioned first response (direct DeepSeek call)
 - [x] Sectioned response cards have a working `[Explore]` button that opens `/learn/<id>` in a new tab
 - [x] `/learn/<id>` route uses the same 3-pane layout
-- [x] `[Fact Check]` triggers the ADK `SequentialAgent` (Search + Verdict) and renders a verdict card in-place
+- [x] `[Fact Check]` calls Gemini with Google Search grounding and renders a verdict card in-place
 - [x] `[Fact Check]` returns a graceful error card when `GOOGLE_API_KEY` is unset
 
 ---
@@ -1551,6 +1546,8 @@ A single Alpine boolean `contentBusy` in `appState()` gates both the **Send** an
 - Manual calls to `window._setContentBusy(true/false)` inside `exploreSection()`, `generateSectionQuiz()`, `generateQuizForSession()`, and sidebar session-switch handlers.
 
 `chatLoading` tracks the chat form spinner separately. Both are OR'd in the `:disabled` binding.
+
+**Note (Phase 13):** News card Explore (`discussArticle()`) was deliberately moved out of the `contentBusy` scope. It runs as a background fetch and only controls its own per-card `exploreLoading` spinner — the Send button is never disabled by a news card action.
 
 #### 8.2 News Panel Loading Overlay
 
@@ -1633,6 +1630,347 @@ Triggered from: `setActiveSession()`, `htmx:afterSettle` on `#session-list`, and
 ### Items Deferred from the Original Phase 7 Plan
 The following were specified in the original plan but were **not shipped** — they were superseded by simpler designs or moved to a later phase:
 
-- ❌ Single ADK `SequentialAgent` covering every chat reply (Research → Fact Check → Editor) — replaced by the layered design in `ARCHITECTURE.md §25`. The chat path uses LangGraph; only the on-demand `[Fact Check]` button uses ADK.
+- ❌ Single ADK `SequentialAgent` covering every chat reply (Research → Fact Check → Editor) — replaced by the layered design in `ARCHITECTURE.md §25`. The chat path uses LangGraph; the on-demand `[Fact Check]` button uses a direct `google-genai` call with Google Search grounding (no ADK).
 - ❌ Inline per-section `[Quiz]` button on sectioned responses (`POST /chat/quiz-section`, `quiz_agent.py`) — not implemented. MCQ generation remains a separate full-page quiz flow (Phase 4 / hierarchical quiz in Phase 6).
 - ❌ `confidence` field on each section, threshold-based section dropping — not implemented. Section validation is structural only (intro / sections / outro / learn_more_topic).
+
+---
+
+## Phase 9 — Embedding-Based Topic News (semantic search upgrade)
+
+**Branch:** `feature/auth` (current)
+
+### 9.1 Motivation
+
+The previous topic-news implementation used keyword matching with a hardcoded `_STOPWORDS` set and a proportional `min_score` threshold. This produced false positives (biology articles in an AI topic, "bug spray" matching a "2026 Manufacturing Roadmap" via year extraction) and missed semantically related articles that used different vocabulary. The root cause was structural — string matching cannot represent meaning.
+
+### 9.2 Architecture Overview
+
+Three components work together:
+
+```
+APScheduler (_refresh_all job, every ~1.5 h)
+  └─ fetch ALL_FEEDS → embed_articles() → Redis ARTICLE_EMBED_KEY (TTL 1 h)
+
+GET /news/topic-partial
+  └─ service.get_topic_news()
+       └─ check Redis topic result cache (TTL 30 min / 10 min)
+            └─ cache miss → fetch_topic_news()
+                 └─ load ARTICLE_EMBED_KEY from Redis (or embed fresh on miss)
+                      └─ weighted_scores() → adaptive_threshold() → mmr_rerank()
+                           └─ store result in topic result cache → return
+```
+
+### 9.3 Files Changed
+
+| File | Change |
+|------|--------|
+| `backend/api/news/embeddings.py` | Complete rewrite — model loader, `embed_articles()`, `weighted_scores()`, `adaptive_threshold()`, `mmr_rerank()` |
+| `backend/api/news/cache.py` | `fetch_topic_news()` rewritten; `refresh_article_embeddings()` added; `_collect_all_articles()` extracted as helper |
+| `backend/core/scheduler.py` | `_refresh_all()` now calls `refresh_article_embeddings()` after category feed refresh |
+| `requirements.txt` | Added `sentence-transformers>=2.7` |
+| `docs/ARCHITECTURE.md` | §3.5, §6.2, §6.3 (new), §25.1, §26 updated |
+
+### 9.4 Improvements Implemented
+
+**1. Pre-computed article embeddings (scheduler)**
+- `refresh_article_embeddings()` fetches ALL_FEEDS, embeds all article titles + summaries, stores as `{article + title_emb + summary_emb}` JSON in Redis.
+- Called by `_refresh_all()` — no extra RSS fetches on the hot path.
+- Topic queries load pre-computed embeddings (~5 ms Redis hit) instead of re-fetching feeds (2–5 s).
+
+**2. Separate title and summary embeddings with weighted scoring**
+- `embed_articles()` encodes title and summary independently.
+- `weighted_scores()`: `score = 0.7 × cos_sim(topic, title) + 0.3 × cos_sim(topic, summary)`.
+- Titles carry more signal; summaries add context without diluting the title match.
+
+**3. Adaptive similarity threshold**
+- `adaptive_threshold(scores, floor=0.15)` = `max(0.15, top_score × 0.6)`.
+- Replaces the fixed `_MIN_SIMILARITY = 0.25` constant.
+- Scales with match quality: strong topic → strict threshold (filters noise); niche topic → relaxed threshold (still surfaces results).
+
+**4. Maximal Marginal Relevance (MMR) re-ranking**
+- `mmr_rerank()` in `embeddings.py` implements the standard MMR algorithm.
+- Iteratively picks the next article maximising `λ × relevance − (1−λ) × max_sim_to_selected` (λ = 0.6).
+- Prevents 15 articles from the same source or sub-angle appearing in results.
+- Diversity is computed on a re-normalised weighted combination of title + summary embeddings.
+
+**5. Model version cache invalidation**
+- `MODEL_VERSION = "v1"` is embedded in the Redis key: `news:article_embeddings:all-MiniLM-L6-v2:v1`.
+- Upgrading the model requires only bumping `MODEL_VERSION` — old keys become unreachable and expire by TTL naturally. No manual cache flush needed.
+
+**6. Age recomputation on cache load**
+- `_age_hours` is recomputed from the stored `published` timestamp each time embeddings are loaded from Redis.
+- Prevents articles appearing newer than they are when the embedding store is 30–60 min old.
+
+**7. Keyword fallback**
+- `_rank_by_keywords()` is retained as a silent fallback.
+- Triggered when `sentence-transformers` fails to load (first deploy before model download, OOM, import error).
+- No crash, no user-visible error — slightly less accurate results.
+
+### 9.5 Embedding Model
+
+| Property | Value |
+|---|---|
+| Library | `fastembed` (ONNX runtime — no PyTorch, ~60 MB install) |
+| Model | `sentence-transformers/all-MiniLM-L6-v2` (SBERT, via fastembed) |
+| Dimensions | 384 |
+| Download size | ~80 MB (one-time, cached by library) |
+| Inference | CPU; ~150 ms for 150 articles (batch) |
+| API key required | No |
+| Normalisation | L2-normalised (dot product = cosine similarity) |
+
+### 9.6 Redis Memory Impact
+
+~150 articles × 2 embeddings × 384 floats × 4 bytes ≈ **460 KB** for the embedding store. Well within the `maxmemory 128mb` Docker Compose limit alongside all other keys.
+
+### 9.7 Latency Profile (after warm-up)
+
+| Operation | Before | After |
+|---|---|---|
+| Topic news (cache hit) | ~5 ms | ~5 ms (unchanged) |
+| Topic news (cache miss) | 2–5 s (feed fetch + embed) | ~20 ms (Redis load + 1 embed + MMR) |
+| First deploy (model download) | N/A | ~30 s one-time |
+| Scheduler embed refresh | N/A | ~2 s added to each `_refresh_all` cycle |
+
+---
+
+## Phase 10 — Economy & Health Tabs + Topic-News Fallback
+
+**Branch:** `feature/auth` (current)
+
+### 10.1 New News Categories
+
+Two new categories added to `backend/api/news/feeds.py` and surfaced as tabs in `news_panel.html`:
+
+| Tab label | Category key | Sources |
+|---|---|---|
+| Econ | `economy` | Reuters Business, BBC Business, The Economist, MarketWatch, Financial Times, Bloomberg, CNBC |
+| Health | `health` | BBC Health, Reuters Health, Medical News Today, WHO News, Science Daily Health, Healthline, Allure |
+
+The tab bar is now six tabs: AI · Dev · World · Bio · Econ · Health. No other code changes required — `NEWS_FEEDS` is the single source of truth for both the scheduler refresh and the ALL_FEEDS embedding store.
+
+### 10.2 Topic-News Fallback — Known Issue & Pending Fix
+
+**Problem observed:** When a user is inside a `news_discussion` session (e.g. a BBC Health article about quintuplets), the right-pane topic news panel shows AI articles instead of health-related content. Root cause: the embedding store is empty on a fresh deploy (scheduler hasn't run yet), the on-the-fly keyword fallback finds no articles matching the specific article title as a query, and `service.get_topic_news()` hard-codes a final fallback to `get_news("ai")`.
+
+**Implemented fallback chain:**
+
+```
+fetch_topic_news(topic) → results → return
+                        → empty
+                             → session has source_category → get_news(source_category)   [Case 1]
+                             → no source_category → embed(topic) vs CATEGORY_LABELS → get_news(closest)  [Case 2]
+```
+
+**Case 1 — `news_discussion` sessions (data provenance):**
+- `POST /news/discuss` now accepts `source_category` from the frontend (the active tab at time of click).
+- `news_panel.html` Explore button sends `source_category: category` in `hx-vals`.
+- `discuss/service.py` persists it with `UPDATE chat_sessions SET source_category = %s`.
+- `learn_more` children inherit `source_category` from their parent — the full session tree stays topically consistent.
+- Migration `008_source_category.sql` adds the column (`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS source_category VARCHAR(20)`).
+
+**Case 2 — `regular` sessions (zero-shot embedding classification):**
+- `CATEGORY_LABELS` dict in `embeddings.py` maps each category key to a descriptive label string.
+- `get_category_embeddings(redis_client)` computes embeddings for all labels, caches in Redis 24 h under `news:category_embeddings:…` (model + version in key for automatic invalidation on upgrade).
+- `_infer_category_by_embedding(topic)` in `service.py` embeds the topic, dot-products against label embeddings, returns highest-similarity category.
+- No hardcoded keyword lists. Tuneable by editing `CATEGORY_LABELS` strings only.
+
+---
+
+## Phase 11 — Learning Platform Prompt Redesign
+
+**Branch:** `feature/auth` (current)
+
+### 11.1 Motivation
+
+The existing AI prompts were designed for a **technical assistant** role: answer AI/ML/software questions accurately. As the product evolved into a **general learning platform** anchored in current news, three structural gaps emerged:
+
+1. **Domain lock** — `SYSTEM_PROMPT` restricts to AI, ML, and software. The news panel covers World, Bio, Econ, Health — the AI tutor must match that breadth.
+2. **No completeness guarantee** — the AI picks 3–5 sections it finds interesting, potentially missing important conceptual pillars. A learner cannot know what was omitted.
+3. **No learning progression** — sections appear in arbitrary order rather than foundational → mechanism → application → advanced.
+4. **No misconception field** — common wrong assumptions are not surfaced; learners form bad mental models silently.
+5. **Weak intro/outro** — intro does not state prerequisite knowledge; outro does not recommend an exploration order.
+
+See `ARCHITECTURE.md §27` for the full design rationale.
+
+### 11.2 Files Changed
+
+| File | Change |
+|------|--------|
+| `backend/agent/prompts.py` | All four teaching prompts rewritten; `SYSTEM_PROMPT`, `DISCUSSION_PROMPT`, `LEARN_MORE_PROMPT`, `NEWS_CURATION_PROMPT` |
+| `backend/templates/app/index.html` | Chat input placeholder updated to reflect domain breadth |
+
+### 11.3 `SYSTEM_PROMPT` Changes (Scenario 1 — Manual Chat)
+
+**Removed:**
+- "specialising in artificial intelligence, machine learning, and related technologies" domain declaration
+- Fixed bullet list of AI/ML topics
+
+**Added:**
+- Domain: any topic (science, history, technology, economics, biology, politics, mathematics, arts)
+- Completeness mandate: "Cover every major pillar at the level asked. A learner must see the complete shape of the subject. Missing a significant concept is a failure."
+- Section ordering rule: foundational → mechanism → application → advanced/edge cases
+- `misconception` field in every section schema: one sentence — the most common wrong assumption about this concept
+- Prerequisite signal in `intro`: state what background is assumed or "No prior knowledge needed"
+- Adaptive section count: 4–6 typically, up to 7 for complex multi-pillar subjects; minimum 3
+- Outro strengthened: must give concrete recommended exploration order
+
+### 11.4 `DISCUSSION_PROMPT` Changes (Scenario 2 — News Explore)
+
+**Added:**
+- Completeness mandate: "Cover every conceptual pillar this news event touches — a reader should be able to see all the concepts this event exposes"
+- `misconception` field per section
+- Section ordering: foundational → mechanism → application
+- `intro` must state which areas of knowledge this news event touches
+
+**Unchanged:**
+- Do-not-discuss rules (names, political opinions, dates as subjects)
+- News-anchored scope (not full domain — only concepts this event exposes)
+
+### 11.5 `LEARN_MORE_PROMPT` Changes (Scenario 3 — Section Explore)
+
+**Added:**
+- Breadcrumb instruction: `intro` must include "This is a deep-dive into [topic], a sub-component of [parent concept]." — prevents learners from getting lost after multiple Explore clicks
+- Completeness mandate: cover ALL sub-components of the requested concept
+- `misconception` field per section
+- Section ordering: same foundational → applied → advanced rule
+
+**Unchanged:**
+- Depth-first focus — never revisit sibling concepts from the parent response
+- `learn_more_topic` must be more specific than section title
+
+### 11.6 `NEWS_CURATION_PROMPT` Changes
+
+**Changed:** audience description expanded from "AI engineers, ML researchers, software developers" to "a general educated audience" to match the platform's broad topic coverage.
+
+### 11.7 Placeholder Text
+
+`backend/templates/app/index.html` line 148:
+
+```
+Before: placeholder="Ask anything about AI, ML, or software..."
+After:  placeholder="Ask anything — science, history, technology, economics…"
+```
+
+### 11.8 Section Schema After Phase 11
+
+```json
+{
+  "id": "s1",
+  "title": "<concept name>",
+  "content": "<2–3 sentence explanation — how it works and why it matters>",
+  "key_points": [
+    "<concrete, testable learning point>",
+    "<second learning point>",
+    "<third learning point>"
+  ],
+  "misconception": "<the single most common wrong assumption about this concept — one sentence>",
+  "learn_more_topic": "<specific sub-topic for deeper Explore follow-up>"
+}
+```
+
+The `misconception` field is new in Phase 11. Backend parsing validates its presence on sectioned responses from Scenarios 1, 2, and 3. It is displayed as a callout card below `key_points` in `sectioned_message.html`.
+
+---
+
+## Phase 12 — URL Fetch Tool (ReAct pattern)
+
+**Branch:** `feature/auth` (current)
+
+### 12.1 Motivation
+
+When a user pastes a public URL in the main chat and asks to explain it, the LangGraph agent previously had no way to read the page — it would respond from training memory only, risking outdated or hallucinated content. Phase 12 adds a `fetch_url` LangGraph tool following the industry-standard ReAct pattern used by ChatGPT browsing, Perplexity, and Claude web search.
+
+No third-party reader service is used. Plain `requests` + `BeautifulSoup4` is sufficient for the common case (news articles, Wikipedia, blog posts, documentation, GitHub READMEs). JS-rendered SPAs without static HTML will return little or no content — this is a known and accepted limitation.
+
+### 12.2 Files Changed
+
+| File | Change |
+|------|--------|
+| `backend/agent/tools.py` | Added `fetch_url` tool |
+| `backend/agent/graph.py` | Added `fetch_url` to tools list |
+| `requirements.txt` | Added `requests`, `beautifulsoup4` |
+
+### 12.3 Tool Behaviour
+
+```
+User: "explain https://example.com/article"
+        │
+        ▼
+LangGraph agent (DeepSeek) sees URL, calls fetch_url(url)
+        │
+        ▼
+requests.get(url, timeout=8)
+BeautifulSoup strips script/style/nav/footer/header/aside
+Extracts <main> or <article> or <body> text
+Truncates to 4 000 chars
+        │
+  ┌─────┴─────────────────────────────────┐
+  │ success                               │ failure
+  ▼                                       ▼
+page text returned to agent        descriptive error string
+        │                          agent notes failure in response
+        ▼
+DeepSeek generates sectioned structured response
+grounded in actual page content
+```
+
+### 12.4 Error Handling
+
+| Failure | Returned string |
+|---------|----------------|
+| Timeout (>8 s) | "Request timed out — server took too long" |
+| HTTP 4xx/5xx | "HTTP {status} error fetching {url}" |
+| Paywall / login wall | "<100 chars extracted — page may require login" |
+| JS-only page | "<100 chars extracted — page may be JS-rendered" |
+| Any other exception | "Could not fetch {url}: {reason}" |
+
+The agent uses the error string as context and tells the user why it couldn't read the page, rather than silently hallucinating content.
+
+---
+
+## Phase 13 — News Panel & Quiz UX Polish
+
+**Branch:** `feature/auth` (current)
+
+### 13.1 Background News Explore (`discussArticle`)
+
+**Problem:** Clicking Explore on a news card fired an HTMX request with `hx-target="#chat-messages"`, which triggered the global `htmx:beforeRequest` → `contentBusy = true` → disabled the Send button for the duration of the LLM call (~5–10 s).
+
+**Fix:** Replaced the HTMX button with a JS `fetch()` call (`window.discussArticle()`). The session is created in the background; `contentBusy` is never set. On success the sidebar refreshes and a toast guides the user. The news card Explore button shows its own per-button spinner (from Alpine `exploreLoading`) without blocking any other interaction.
+
+**Files changed:**
+- `backend/static/app.js` — added `discussArticle()`, removed `onDiscussResponse()`
+- `backend/templates/partials/news_panel.html` — button converted from HTMX to `@click="discussArticle(...)"`
+- `backend/templates/partials/topic_news_panel.html` — same; button also renamed "Discuss" → "Explore"
+
+### 13.2 `newsCardState()` Alpine Component
+
+A named Alpine component (`newsCardState(articleId)`) was extracted to `app.js` and is used by both news panel templates via `x-data="newsCardState('...')"`. It replaces the inline `{exploreLoading: false, factChecking: false}` object and adds:
+
+- `alreadyExplored` — initialised from `localStorage` (`knroot_explored` JSON array, max 500 entries) on component mount
+- `markExplored()` — sets `alreadyExplored = true` and saves the article ID to `localStorage`
+
+**Visual indicator:** a small green checkmark icon appears inside the Explore button when `alreadyExplored` is true. The button remains fully clickable — users can explore an article multiple times.
+
+### 13.3 AI Top-Picks Star Badge (`_curated`)
+
+`curate_with_ai()` in `backend/api/news/cache.py` now:
+
+- Uses `n_select = min(len(articles) // 2, 5)` — selects at most 5 articles, always at most half the total, so there is always a meaningful non-curated remainder
+- Tags selected articles with `_curated: True` in the returned dict (preserved through `set_cache` since only `_age_hours` is stripped)
+
+The news panel template (`news_panel.html`) shows a gold star SVG icon before the source name and an amber card border when `article.get('_curated')` is truthy. The force-refresh bug in `/news/partial` (query param `force` was ignored — hardcoded `False`) was also fixed in this phase.
+
+### 13.4 Quiz: "Explore this topic" on Correct Answers
+
+**Problem:** Correctly answered quiz questions showed no follow-up action — users who knew an answer had no way to dive deeper without first getting something wrong.
+
+**Fix:** A new footer strip (`x-show="submitted && answers[q.id] === q.correct"`) is added to each question card in `quiz_inline.html`. It shows only the **Explore this topic** button — no explanation text, since the user already knows the answer. The button calls the existing `exploreRelearn(q.id, q.topic)` function and shares the same `relearn[q.id]` state (lazy-initialised by `_panel()`).
+
+| State | Incorrect answer | Correct answer |
+|-------|-----------------|----------------|
+| After submit | "Why was I wrong?" → explanation → Explore | Explore this topic |
+| After Explore clicked | ✓ Loaded badge | ✓ Loaded badge |
+
+**File changed:** `backend/templates/partials/quiz_inline.html` only.

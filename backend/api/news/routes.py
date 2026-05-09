@@ -30,7 +30,8 @@ def news_partial():
     category = request.args.get("category", "ai").lower()
     if category not in NEWS_FEEDS:
         category = "ai"
-    articles = get_news(category, force=False)
+    force = request.args.get("force", "false").lower() == "true"
+    articles = get_news(category, force=force)[:15]
     return render_template(
         "partials/news_panel.html",
         articles=articles,
@@ -46,33 +47,45 @@ def topic_news_partial():
     hours = min(int(request.args.get("hours", 168)), 720)
     force = request.args.get("force", "false").lower() == "true"
 
-    # Resolve topic from session if not supplied directly
-    if session_id and not topic:
-        from backend.api.sessions.service import get_session
-        session = get_session(g.user_id, session_id)
-        if session:
-            stype = session.get("session_type", "")
-            if stype == "news_discussion":
-                # topic stores the article URL — use the article title instead
-                topic = session.get("title") or ""
-            elif stype == "quiz":
-                raw = session.get("topic") or session.get("title") or ""
-                topic = raw if raw.lower() not in ("quiz", "") else ""
-            else:
-                topic = session.get("topic") or session.get("title") or ""
+    source_category: str | None = None
+
+    # Resolve topic and source_category from session metadata.
+    if session_id:
+        from backend.core.db import query_one
+        row = query_one(
+            "SELECT session_type, title, topic, source_category FROM chat_sessions WHERE id = %s AND user_id = %s",
+            (session_id, g.user_id),
+        )
+        if row:
+            source_category = row.get("source_category") or None
+            if not topic:
+                stype = row.get("session_type", "")
+                if stype == "news_discussion":
+                    topic = row.get("title") or ""
+                elif stype == "quiz":
+                    raw = row.get("topic") or row.get("title") or ""
+                    topic = raw if raw.lower() not in ("quiz", "") else ""
+                else:
+                    topic = row.get("topic") or row.get("title") or ""
 
     try:
-        articles = get_topic_news(topic, hours, force=force) if topic else get_news("ai", force=force)
+        articles = (
+            get_topic_news(topic, hours, force=force, source_category=source_category)
+            if topic
+            else get_news(source_category or "ai", force=force)
+        )
     except Exception:
         logger.exception("topic-partial failed, falling back to general news")
-        articles = get_news("ai")
+        articles = get_news(source_category or "ai")
         topic = ""
+
     return render_template(
         "partials/topic_news_panel.html",
         articles=articles,
         topic=topic,
         hours=hours,
         session_id=session_id,
+        source_category=source_category or "ai",
     )
 
 

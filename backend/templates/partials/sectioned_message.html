@@ -1,5 +1,5 @@
 {# partials/sectioned_message.html — structured AI response with explore + quiz buttons #}
-{# Variables: data ({type, intro, sections:[{id,title,content,key_points,learn_more_topic}], outro}), session_id (str) #}
+{# Variables: data ({type, intro, sections:[{id,title,content,key_points,misconception,learn_more_topic}], outro}), session_id (str) #}
 <div class="flex justify-start mb-3">
   <div class="max-w-2xl w-full">
 
@@ -39,7 +39,7 @@
       x-data="{exploreLoading:false,exploreOpened:false,quizLoading:false,quizOpened:false}"
       data-topic="{{ section.learn_more_topic | e }}"
       data-title="{{ section.title | e }}"
-      data-content="{{ (section.content ~ ((' Key points: ' ~ section.key_points | join('. ')) if section.key_points else '')) | e }}"
+      data-content="{{ (section.content ~ ((' Key points: ' ~ section.key_points | join('. ')) if section.key_points else '') ~ ((' Common misconception: ' ~ section.misconception) if section.misconception else '')) | e }}"
     >
       <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
         <span class="text-yellow-500" aria-hidden="true">⚡</span>
@@ -57,6 +57,14 @@
           </li>
           {% endfor %}
         </ul>
+        {% endif %}
+        {% if section.misconception %}
+        <div class="mt-2 flex items-start gap-2 px-3 py-2 bg-amber-50 border border-amber-100 rounded-lg">
+          <span class="flex-shrink-0 text-amber-500 text-xs mt-0.5" aria-hidden="true">⚠</span>
+          <p class="text-xs text-amber-800 leading-relaxed">
+            <span class="font-semibold">Common misconception:</span> {{ section.misconception }}
+          </p>
+        </div>
         {% endif %}
       </div>
 

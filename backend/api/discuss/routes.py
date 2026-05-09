@@ -31,6 +31,7 @@ def news_discuss():
         article_title=data["article_title"],
         article_summary=data.get("article_summary", ""),
         article_link=data["article_link"],
+        source_category=data.get("source_category") or None,
     )
 
     # HTMX: render the first AI response directly into #chat-messages.

@@ -161,6 +161,40 @@ window._reapplyActiveDot = function () {
 };
 
 // =============================================================================
+// Alpine component: newsCardState(articleId) — per news-card state
+// =============================================================================
+
+function newsCardState(articleId) {
+  return {
+    exploreLoading: false,
+    alreadyExplored: false,
+    factChecking: false,
+
+    init() {
+      if (!articleId) return;
+      try {
+        const ids = JSON.parse(localStorage.getItem('knroot_explored') || '[]');
+        this.alreadyExplored = ids.includes(articleId);
+      } catch (_) {}
+    },
+
+    markExplored() {
+      this.alreadyExplored = true;
+      if (!articleId) return;
+      try {
+        const ids = JSON.parse(localStorage.getItem('knroot_explored') || '[]');
+        if (!ids.includes(articleId)) {
+          ids.push(articleId);
+          // Cap at 500 entries so localStorage never grows unbounded
+          if (ids.length > 500) ids.splice(0, ids.length - 500);
+          localStorage.setItem('knroot_explored', JSON.stringify(ids));
+        }
+      } catch (_) {}
+    },
+  };
+}
+
+// =============================================================================
 // Alpine component: appState() — main dashboard
 // =============================================================================
 
@@ -462,26 +496,34 @@ window.generateSectionQuiz = function (sessionId, sectionTitle, sectionContent, 
     });
 };
 
-// After a news "Discuss" button creates a new session.
-window.onDiscussResponse = function (event) {
-  if (!event || !event.detail) return;
-  const xhr = event.detail.xhr;
-  if (!xhr || xhr.status >= 400) return;
-
-  const sessionId = xhr.getResponseHeader('HX-Session-Id');
-  if (sessionId) {
-    window.setActiveSession(sessionId);
-    // Ensure the hidden input in the chat form has the session id immediately.
-    document.querySelectorAll('input[name="session_id"]').forEach((el) => {
-      el.value = sessionId;
+// Fire a background news-discuss request without touching #chat-messages or setting contentBusy.
+// The new session is created silently; the sidebar refreshes and a toast guides the user.
+window.discussArticle = function (dataset, callback) {
+  fetch('/news/discuss', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      article_id: dataset.articleId || '',
+      article_title: dataset.articleTitle || '',
+      article_summary: dataset.articleSummary || '',
+      article_link: dataset.articleLink || '',
+      source_category: dataset.sourceCategory || 'ai',
+    }),
+  })
+    .then(function (r) {
+      if (!r.ok) throw new Error('discuss failed');
+      return r.json();
+    })
+    .then(function () {
+      const sl = document.getElementById('session-list');
+      if (sl) htmx.trigger(sl, 'sessionListRefresh');
+      Toast.success('Exploration ready — click it in the sidebar to open');
+      if (callback) callback(true);
+    })
+    .catch(function () {
+      Toast.error('Could not start exploration');
+      if (callback) callback(false);
     });
-  }
-
-  const sl = document.getElementById('session-list');
-  if (sl) htmx.trigger(sl, 'sessionListRefresh');
-
-  const messages = document.getElementById('chat-messages');
-  if (messages) messages.scrollTop = messages.scrollHeight;
 };
 
 // Restore the news panel in the right pane.

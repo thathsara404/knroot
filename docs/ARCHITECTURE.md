@@ -2,18 +2,19 @@
 
 > **Scope:** Reshaping the existing AI chat agent into a full-featured tech-learning platform with authentication, chat history, smart news caching, a multi-agent knowledge pipeline, and an adaptive knowledge-check system.
 >
-> **Baseline stack:** Flask · PostgreSQL · Redis · LangGraph (chat) · Google ADK (fact-check) · OpenRouter (DeepSeek) · Google AI (Gemini 2.0 Flash) · Jinja2 + HTMX + Alpine.js · Docker Compose
+> **Baseline stack:** Flask · PostgreSQL · Redis · LangGraph (chat) · google-genai (fact-check, Gemini 2.0 Flash + Google Search grounding) · OpenRouter (DeepSeek) · fastembed (topic-news embeddings) · Jinja2 + HTMX + Alpine.js · Docker Compose
 
 ---
 
 ## 1. Product Vision
 
-A focused **AI-powered tech learning companion** where users can:
+A **news-anchored AI learning platform** where users can explore any topic — technology, science, history, economics, biology, politics — through structured, progressive AI-guided learning sessions triggered by real-world news.
 
 1. Register and log in with a personal account.
-2. Have persistent, named chat sessions with an AI tutor that specialises in AI/ML and software engineering.
-3. Glance at the latest AI news in a live right-side panel — without hammering news APIs on every page load.
-4. Test their own knowledge after any chat session through auto-generated technical MCQs derived from that conversation.
+2. Ask about **any topic** and receive a structured conceptual map covering every major pillar of that subject, ordered foundational → applied → advanced — so no important concept is missed.
+3. Click **Explore** on any news article across six categories (AI · Dev · World · Bio · Econ · Health) to extract the underlying concepts from current real-world events.
+4. Drill deeper into any concept via recursive **Learn More** sessions — each click goes one level deeper, building a personal knowledge tree.
+5. Test knowledge at any depth via adaptive MCQs derived from the full conversation ancestry, with per-question Relearn explanations and Follow-up quizzes targeting weak areas.
 
 ---
 
@@ -105,9 +106,11 @@ ai-agent/
 │   │   │   └── service.py              ← send_message(), auto_title(), extract_suggested_topics()
 │   │   ├── news/
 │   │   │   ├── routes.py
-│   │   │   ├── service.py              ← get_news(category, force) — orchestrates cache + RSS
-│   │   │   ├── cache.py                ← Redis day/hour cache, DB fallback, promote_hour_to_day()
-│   │   │   └── feeds.py                ← NEWS_FEEDS dict keyed by 'ai' | 'programming' | 'political'
+│   │   │   ├── service.py              ← get_news(category) / get_topic_news(topic) — orchestrates cache + RSS
+│   │   │   ├── cache.py                ← Redis day/hour cache; fetch_topic_news() embedding pipeline; refresh_article_embeddings()
+│   │   │   ├── embeddings.py           ← all-MiniLM-L6-v2 loader; embed_articles(); weighted_scores(); adaptive_threshold(); mmr_rerank()
+│   │   │   ├── service.py              ← get_news(category) / get_topic_news(topic) — orchestrates cache + RSS; _infer_category() fallback
+│   │   │   └── feeds.py                ← NEWS_FEEDS dict keyed by 'ai' | 'programming' | 'political' | 'biology' | 'economy' | 'health'
 │   │   ├── discuss/
 │   │   │   ├── routes.py
 │   │   │   └── service.py              ← news_discuss(), create_learn_more_session(), get_tree()
@@ -135,7 +138,8 @@ ai-agent/
 │       ├── 004_mcq_attempts.sql        ← includes scope_sessions + relearn_cache columns
 │       ├── 005_session_messages.sql
 │       ├── 006_cascade_fk.sql
-│       └── 007_quiz_session.sql        ← adds linked_attempt_id to chat_sessions
+│       ├── 007_quiz_session.sql        ← adds linked_attempt_id to chat_sessions
+│       └── 008_source_category.sql     ← adds source_category to chat_sessions (news-tab origin for topic-news fallback)
 │
 ├── backend/templates/                  ← Jinja2 HTML templates (served by Flask directly)
 │   ├── base.html                       ← HTML shell: head with CDN links, nav, flash messages
@@ -153,13 +157,13 @@ ai-agent/
 │       ├── message.html                ← Single chat message bubble
 │       ├── messages.html               ← Full message history list (session replay)
 │       ├── sectioned_message.html      ← Sectioned AI response (Explore / Learn More)
-│       ├── news_panel.html             ← 3-tab news panel (AI / Dev / World)
+│       ├── news_panel.html             ← 6-tab news panel (AI / Dev / World / Bio / Econ / Health)
 │       ├── topic_news_panel.html       ← Topic-filtered news articles partial
 │       ├── knowledge_tree.html         ← Knowledge tree node list
 │       ├── knowledge_tree_panel.html   ← Right-pane knowledge tree wrapper
 │       ├── quiz_section.html           ← Per-section inline quiz cards
 │       ├── quiz_inline.html            ← Full inline quiz loaded into #chat-messages
-│       └── fact_check_report.html      ← ADK fact-check verdict card
+│       └── fact_check_report.html      ← Gemini fact-check verdict card
 │
 ├── backend/static/                     ← Served at /static/ — minimal custom JS only
 │   ├── app.js                          ← Alpine appState() + all HTMX event wiring
@@ -231,6 +235,7 @@ CREATE TABLE chat_sessions (
     topic             VARCHAR(500),
     news_article_id   VARCHAR(20),
     linked_attempt_id UUID,                          -- points to mcq_attempts row for quiz sessions
+    source_category   VARCHAR(20),                   -- news tab origin ('health','economy',…) for topic-news fallback
     created_at        TIMESTAMPTZ DEFAULT NOW(),
     updated_at        TIMESTAMPTZ DEFAULT NOW(),
     last_message_at   TIMESTAMPTZ DEFAULT NOW()
@@ -403,17 +408,67 @@ db.upsert(day_key, day_articles)
 
 ### 6.2 Topic-Specific News Cache
 
-When a user asks about a specific topic in the news panel, the backend also maintains a short-lived topic cache:
+When a user is inside a chat session, the right-pane news panel shows articles semantically relevant to the session topic. Two Redis cache layers keep the hot path fast:
 
 ```
 Redis keys:
-  news:topic:{sha256(topic)[:12]}:30    TTL: 30 min  — exact topic match
-  news:topic:{sha256(topic)[:12]}:10    TTL: 10 min  — fallback / partial match
+  news:article_embeddings:{model}:{version}      TTL: 1 h   — pre-computed title+summary embeddings for all articles
+  news:category_embeddings:{model}:{version}     TTL: 24 h  — one embedding per category label (zero-shot routing)
+  news:topic:{sha256(topic)[:10]}:{hours}        TTL: 30 min (hit) / 10 min (miss) — scored+ranked result list
 ```
 
-Served via `GET /news/topic-partial?topic=<text>`. Falls back to the category cache if no topic-specific articles are available.
+**Embedding store** (`news:article_embeddings:…`) is written by the APScheduler `_refresh_all` job each time category feeds are refreshed (every ~1.5 h). Each entry is a full article dict with two extra fields:
+- `title_emb`: list[float] — L2-normalised 384-dim embedding of the title
+- `summary_emb`: list[float] — L2-normalised 384-dim embedding of the summary
 
-**`_age_hours` handling:** articles computed during RSS fetch include a transient `_age_hours` field used for in-flight filtering. This field is **stripped before any Redis `setex` call** (both in `cache.py`'s `set_cache()` and in `service.py`'s `get_topic_news()`) so stale age values are never stored in the cache.
+**Topic result cache** (`news:topic:…`) is written by `service.py`'s `get_topic_news()` after the first query for a topic. Subsequent requests within the TTL window are served from this cache (~5 ms) — no feed fetch, no embedding.
+
+Served via `GET /news/topic-partial?topic=<text>&session_id=<id>`. When topic search returns no results, the fallback chain is:
+
+1. **`source_category`** (stored on `chat_sessions` at session creation) — used for `news_discussion` and `learn_more` sessions. The originating tab category is a known fact; no inference needed.
+2. **Embedding-based category routing** — used for `regular` sessions. The topic is embedded and compared against pre-computed `CATEGORY_LABELS` embeddings (one per category, 24 h Redis TTL). The closest category is selected via cosine similarity — zero-shot classification, no hardcoded keywords.
+
+**`_age_hours` handling:** `_age_hours` is re-computed from the stored `published` timestamp each time embeddings are loaded from Redis, so values do not grow stale between the embed job and the query. The field is stripped before writing to the topic result cache (both in `cache.py`'s `set_cache()` and in `service.py`'s `get_topic_news()`).
+
+### 6.3 Topic-News Ranking Pipeline
+
+`fetch_topic_news()` in `backend/api/news/cache.py` runs a multi-stage pipeline on every cache miss:
+
+```
+Redis hit?
+  ├── YES → load articles_with_embs (pre-computed)
+  └── NO  → fetch ALL_FEEDS → embed_articles() (fallback, slower)
+        │
+        ▼
+  Re-compute _age_hours from published timestamp
+        │
+        ▼
+  Filter to requested age window (default 7 d; relax to 30 d if empty)
+        │
+        ▼
+  Embed topic (1 vector, ~2 ms)
+        │
+        ▼
+  Weighted cosine similarity per article
+    score = 0.7 × cos_sim(topic, title_emb)
+          + 0.3 × cos_sim(topic, summary_emb)
+        │
+        ▼
+  Adaptive threshold = max(0.15, top_score × 0.6)
+        │
+        ▼
+  Maximal Marginal Relevance re-ranking (λ = 0.6)
+  → top-15 articles, semantically diverse
+        │
+        ▼
+  Strip embedding vectors before returning
+```
+
+**Why each stage:**
+- **Weighted scoring** — titles are denser signal than summaries (boilerplate, datelines). `0.7 / 0.3` split reflects this.
+- **Adaptive threshold** — a fixed threshold fails for niche topics (nothing passes) or very broad queries (everything passes). Scaling with `top_score × 0.6` adapts automatically.
+- **MMR re-ranking** — prevents 15 articles from the same source or sub-angle. MMR iteratively picks the next article that maximises `λ × relevance − (1−λ) × max_similarity_to_already_selected`.
+- **Keyword fallback** — if `fastembed` fails to load (first deploy before model download, OOM), the old keyword-scoring path runs silently. No crash, slightly less accurate.
 
 ### 6.3 Article Data Shape
 
@@ -673,7 +728,7 @@ The left and right panes are **user-resizable** via drag handles. Alpine.js trac
 - Quiz loads **inline** into `#chat-messages` (no new tab).
 - Button label toggles: "🧠 Check Knowledge" → "🧠 Follow-up Quiz" after a quiz is submitted.
 - Button disabled via `:disabled="quizLoading || chatLoading || contentBusy || (quizViewState && !quizViewState.submitted)"`.
-- **`contentBusy`** — single Alpine boolean set `true` during all content-loading operations (chat send, quiz generation, Explore, section quiz, Discuss, sidebar session switch, learn-more creation). Both Send and Check Knowledge buttons bind to it.
+- **`contentBusy`** — single Alpine boolean set `true` during content-loading operations that occupy the centre pane (chat send, quiz generation, section Explore, section quiz, sidebar session switch, learn-more creation). Both Send and Check Knowledge buttons bind to it. News card Explore (`discussArticle()`) intentionally does **not** set `contentBusy` — the session is created in the background and appears in the sidebar without interrupting the current chat view.
 
 **Right pane** — `partials/news_panel.html` (HTMX-loaded):
 - News tab group controlled by Alpine.js `x-data`.
@@ -803,7 +858,7 @@ Failure: server returns HTML error fragment → HTMX swaps into `#form-error`.
 | GET    | `/news/partial`                  | Session | HTMX partial — news panel HTML (`?category=ai`)       |
 | GET    | `/news/topic-partial`            | Session | HTMX partial — topic-filtered articles (`?topic=...`) |
 | POST   | `/news/discuss`                  | Session | Create news_discussion session from article           |
-| POST   | `/news/fact-check`               | Session | ADK fact-check pipeline — returns verdict card HTML   |
+| POST   | `/news/fact-check`               | Session | Gemini fact-check (Google Search grounding) — returns verdict card HTML |
 
 ### Quiz
 
@@ -843,7 +898,7 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}                # DeepSeek for chat / discuss / curation
       - OPENROUTER_MODEL=${OPENROUTER_MODEL:-deepseek/deepseek-chat}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}                        # optional — Gemini for fact-check (Layer 5)
-      - FACT_CHECK_MODEL=${FACT_CHECK_MODEL:-gemini-2.0-flash}  # Gemini model used by ADK fact-check
+      - FACT_CHECK_MODEL=${FACT_CHECK_MODEL:-gemini-2.0-flash}  # Gemini model for fact-check (Layer 5)
       - FLASK_ENV=${FLASK_ENV:-production}
     depends_on:
       db:
@@ -967,41 +1022,29 @@ The current architecture uses LangGraph's `invoke` (blocking). Streaming (`astre
 
 ### 16.1 Tab Groups
 
-The right-side news panel becomes a tab group with three categories:
+The right-side news panel is a six-tab group:
 
 | Tab | Category key | Purpose |
 |-----|-------------|---------|
-| AI | `ai` | Existing AI/ML research and industry news |
-| Programming | `programming` | Software engineering, tools, languages, infrastructure |
-| Political | `political` | World affairs, policy, governance — for extracting legal/constitutional learning theories |
+| AI | `ai` | AI/ML research, industry news, model releases |
+| Dev | `programming` | Software engineering, tools, languages, infrastructure |
+| World | `political` | World affairs, policy, governance |
+| Bio | `biology` | Biology research journals, preprints, life-science news |
+| Econ | `economy` | Economics, finance, markets, business |
+| Health | `health` | Health, medicine, wellness, beauty |
 
 ### 16.2 RSS Feeds per Category
 
-```python
-NEWS_FEEDS = {
-    "ai": [
-        ("ArXiv AI",         "https://arxiv.org/rss/cs.AI"),
-        ("ArXiv ML",         "https://arxiv.org/rss/cs.LG"),
-        ("HuggingFace Blog", "https://huggingface.co/blog/feed.xml"),
-        ("VentureBeat AI",   "https://venturebeat.com/ai/feed/"),
-        ("The Verge AI",     "https://www.theverge.com/ai-artificial-intelligence/rss/index.xml"),
-    ],
-    "programming": [
-        ("Hacker News",      "https://hnrss.org/frontpage"),
-        ("GitHub Blog",      "https://github.blog/feed/"),
-        ("Stack Overflow",   "https://stackoverflow.blog/feed/"),
-        ("InfoQ",            "https://feed.infoq.com/"),
-        ("Dev.to",           "https://dev.to/feed/tag/programming"),
-    ],
-    "political": [
-        ("Reuters",          "https://feeds.reuters.com/reuters/politicsNews"),
-        ("BBC News",         "https://feeds.bbci.co.uk/news/politics/rss.xml"),
-        ("NPR Politics",     "https://feeds.npr.org/1014/rss.xml"),
-        ("The Guardian",     "https://www.theguardian.com/politics/rss"),
-        ("AP News",          "https://rsshub.app/apnews/topics/politics"),
-    ],
-}
-```
+Source of truth is `backend/api/news/feeds.py`. Current feeds per category:
+
+| Category | Sources |
+|---|---|
+| `ai` | TechCrunch AI, VentureBeat AI, The Verge AI, ArXiv AI, HuggingFace Blog, Reuters Tech, BBC Technology |
+| `programming` | Hacker News, Dev.to, Stack Overflow Blog, InfoQ, GitHub Blog |
+| `political` | Reuters World, BBC World, CNN, AP News, Al Jazeera, NPR News |
+| `biology` | bioRxiv, PLOS Biology, eLife, Science Daily, STAT News, The Scientist, New Scientist |
+| `economy` | Reuters Business, BBC Business, The Economist, MarketWatch, Financial Times, Bloomberg, CNBC |
+| `health` | BBC Health, Reuters Health, Medical News Today, WHO News, Science Daily Health, Healthline, Allure |
 
 ### 16.3 Cache Key Extension
 
@@ -1018,13 +1061,13 @@ DB news_cache.cache_key examples:
   "2026-05-04:political"
 ```
 
-`GET /news?category=ai` (default: `ai`) — clients pass the active tab's category. All three categories are pre-warmed by APScheduler at startup and on each hourly promotion.
+`GET /news/partial?category=<tab>` — clients pass the active tab's category key. All six categories are pre-warmed by the APScheduler `_refresh_all` job on each cycle.
 
 ### 16.4 Updated NewsPanel Layout
 
 ```
 ┌──────────────────────────────────────────┐
-│  [AI]   [Dev]   [World]                  │  ← tab group
+│  [AI] [Dev] [World] [Bio] [Econ] [Health]│  ← tab group
 │                                           │
 │  ┌──────────────────────────────────┐    │
 │  │ HuggingFace Blog · 3h ago        │    │  ← source · date header
@@ -1048,7 +1091,7 @@ DB news_cache.cache_key examples:
 Each article card exposes three actions:
 - `[Read article]` — opens article URL in a new tab (`rel="noopener noreferrer"`)
 - `[Explore]` — triggers Layer 4 (`POST /news/discuss`); creates a `news_discussion` session and renders the sectioned response in the chat pane
-- `[Fact Check]` — triggers Layer 5 (`POST /news/fact-check`); runs the ADK Search → Verdict pipeline and renders a verdict card in-place under the article (verified / disputed / unverifiable claims with source links)
+- `[Fact Check]` — triggers Layer 5 (`POST /news/fact-check`); single Gemini call with Google Search grounding renders a verdict card in-place (verified / disputed / unverifiable claims with source links). Hidden for research/preprint sources.
 
 ---
 
@@ -1564,7 +1607,7 @@ The system has **five distinct AI/data layers** that operate independently. The 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Layer 1: APScheduler (hourly RSS fetch — NO AI)                │
-│  feedparser → 3 articles per source × 5 sources × 3 categories  │
+│  feedparser → 5 articles per source; up to 35 cached/category   │
 │  Redis: news:hour:YYYY-MM-DD-HH:category (TTL 1h)               │
 │         news:day:YYYY-MM-DD:category    (TTL 24h)               │
 │  Jobs: promote_hour_to_day + fetch_and_cache (every hour)       │
@@ -1583,7 +1626,9 @@ The system has **five distinct AI/data layers** that operate independently. The 
 │  POST /chat → compiled.invoke() → PostgreSQL checkpoint          │
 │  Single StateGraph in backend/agent/graph.py:                    │
 │    nodes: agent (DeepSeek call) + tools (ToolNode)               │
-│  Tool: get_latest_ai_news (reads Redis cache mid-conversation)   │
+│  Tools:                                                          │
+│    get_latest_ai_news — reads Redis cache mid-conversation       │
+│    fetch_url          — fetches public URL content via HTTP      │
 │  First message of new session: top 5 cached headlines injected   │
 │  Used for: regular chat, news_discussion follow-up turns         │
 └─────────────────────────────────────────────────────────────────┘
@@ -1600,34 +1645,37 @@ The system has **five distinct AI/data layers** that operate independently. The 
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│  Layer 5: ADK Fact-Check Pipeline (Gemini 2.0 Flash, on-demand) │
-│  backend/agent/pipeline.py — SequentialAgent with 2 sub-agents: │
-│    1. Search Agent — Gemini + native google_search ADK tool      │
-│       searches Google for 3–4 key claims in the article          │
-│    2. Verdict Agent — Gemini evaluates findings, rates each      │
-│       claim (verified/disputed/unverifiable), returns JSON       │
+│  Layer 5: Gemini Fact-Check Pipeline (google-genai, on-demand)  │
+│  backend/agent/pipeline.py — single Gemini API call with        │
+│  native Google Search grounding (GoogleSearch tool)             │
+│  Gemini searches Google automatically during generation,        │
+│  then rates each claim verified/disputed/unverifiable + JSON    │
 │  Triggered ONLY by [Fact Check] button on news article cards    │
+│  Hidden for research/preprint sources (ArXiv, bioRxiv, etc.)   │
 │  Requires GOOGLE_API_KEY; gracefully returns error card if unset│
 │  Completely separate from chat / discuss flow                   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 25.1 Layer 1 — Hourly RSS Cache (no AI)
+### 25.1 Layer 1 — Hourly RSS Cache + Embedding Pre-compute (no AI)
 
-`feedparser` pulls **3 articles per source** from RSS feeds (5 sources × 3 categories = 15 articles per category). Two APScheduler jobs run hourly:
+`feedparser` pulls **5 articles per source** across all feeds. Three APScheduler jobs run on a 1–1.5 h cycle:
 
 | Job | Purpose |
 |-----|---------|
-| `promote_hour_to_day` | Merges the previous hour's cache into the day cache and extends TTL until midnight UTC |
-| `fetch_and_cache` | Fetches fresh RSS articles, dedupes by link, runs Layer 2 curation, writes to Redis (and the `news_cache` DB fallback) |
+| `news_cache_promote` | Merges the previous hour's Redis cache into the day cache (hourly) |
+| `news_cache_refresh` | Fetches fresh RSS articles per category, runs Layer 2 curation, writes to Redis (every 1.5 h ± 300 s jitter). At the end of each refresh cycle, calls `refresh_article_embeddings()` to rebuild the embedding store. |
 
-Redis keys:
-- `news:hour:{YYYY-MM-DD-HH}:{category}` — TTL 1 hour
-- `news:day:{YYYY-MM-DD}:{category}` — TTL until midnight UTC
+Redis keys written:
+- `news:hour:{YYYY-MM-DD-HH}:{category}` — TTL 1 h (category news panel)
+- `news:day:{YYYY-MM-DD}:{category}` — TTL 24 h (category news panel)
+- `news:article_embeddings:all-MiniLM-L6-v2:v1` — TTL 1 h (topic-news semantic search)
+- `news:category_embeddings:all-MiniLM-L6-v2:v1` — TTL 24 h (zero-shot category routing fallback)
+- `news:topic:{sha256[:10]}:{hours}` — TTL 30 min / 10 min (per-topic result cache)
 
 ### 25.2 Layer 2 — AI News Curation
 
-After each RSS fetch, `curate_with_ai()` in `backend/api/news/cache.py` calls DeepSeek with `NEWS_CURATION_PROMPT`. The model ranks the freshly fetched articles by importance for a technical audience and returns a re-ordered list. The cache is then rewritten so the most impactful headlines appear first. If the LLM call fails, the original RSS order is preserved (no service interruption).
+After each RSS fetch, `curate_with_ai()` in `backend/api/news/cache.py` calls DeepSeek with `NEWS_CURATION_PROMPT`. The model selects up to 10 of the most important articles for a general educated audience and returns them first; the remainder are sorted newest-first and appended. AI-selected articles are tagged `_curated: True` (only when there is a non-curated remainder — if all articles are selected, no badge is shown). The `/news/partial` route slices the cached list to **15 articles** before passing to the template, so the sidebar never shows more than 15 cards. If the LLM call fails, the original RSS order is preserved (no service interruption).
 
 ### 25.3 Layer 3 — LangGraph ReAct Agent
 
@@ -1638,7 +1686,14 @@ The chat agent in `backend/agent/graph.py` is a single `StateGraph` with two nod
 | `agent` | Calls DeepSeek with the conversation history + system prompt |
 | `tools` | LangGraph `ToolNode` that executes any tool calls returned by the agent |
 
-A conditional edge routes from `agent` → `tools` when the model requests a tool, then back to `agent`. The single tool, `get_latest_ai_news`, reads from the Redis cache (Layer 1) so the agent can reference current headlines mid-conversation.
+A conditional edge routes from `agent` → `tools` when the model requests a tool, then back to `agent`. Two tools are registered:
+
+| Tool | Purpose |
+|------|---------|
+| `get_latest_ai_news` | Reads the Redis news cache (Layer 1) so the agent can reference current headlines mid-conversation |
+| `fetch_url` | Fetches the plain-text content of any publicly accessible URL the user pastes. Uses `requests` + `BeautifulSoup4` — strips nav/footer/scripts, extracts `<main>` or `<article>` content, truncates to 4 000 chars. Falls back gracefully on timeouts, HTTP errors, or paywalled pages. |
+
+`fetch_url` follows the standard ReAct pattern: the agent detects a URL in the user message, calls the tool, receives page text, then generates the structured educational response using that content as grounding. No third-party reader service is used — plain HTTP only.
 
 **State persistence:** all conversation history is stored via `PostgresSaver` (LangGraph's PostgreSQL checkpointer). Sessions survive server restarts; the checkpointer is keyed by `thread_id`, which equals the `chat_sessions.id` row.
 
@@ -1655,23 +1710,28 @@ The Explore and Learn More flows do **not** go through LangGraph. `_run_discussi
 
 Both prompts return **structured sectioned JSON** (intro, 3–5 sections, outro — see §18). After the call, the response is validated and the first exchange is written into the LangGraph checkpoint via `update_state` so subsequent turns in the session can use Layer 3 with the full history. There is no second LLM call to persist the message — the direct call's output is the stored content.
 
-### 25.5 Layer 5 — ADK Fact-Check Pipeline (on-demand)
+### 25.5 Layer 5 — Gemini Fact-Check Pipeline (on-demand)
 
-`backend/agent/pipeline.py` defines a Google ADK `SequentialAgent` with two sub-agents, both running Gemini 2.0 Flash:
+`backend/agent/pipeline.py` makes a **single synchronous `google-genai` API call** with the native `GoogleSearch` grounding tool enabled. Gemini performs web searches automatically during generation — no separate search agent or async orchestration needed.
 
-| Sub-agent | Tool | Output |
-|-----------|------|--------|
-| **Search Agent** | Native `google_search` ADK tool | Raw search results for 3–4 key claims extracted from the article |
-| **Verdict Agent** | None (LLM-only reasoning) | Structured JSON: each claim rated `verified` / `disputed` / `unverifiable` with source links |
+| Step | What happens |
+|------|-------------|
+| Build prompt | Article title + summary formatted into `FACT_CHECK_PROMPT` |
+| `client.models.generate_content()` | Gemini searches Google for each claim and generates verdict JSON in one call |
+| `_merge_grounding_sources()` | Source URLs pulled from `grounding_metadata.grounding_chunks` and attached to claims that didn't include URLs |
 
-Triggered **only** by the `[Fact Check]` button on news article cards (`POST /news/fact-check`). Requires `GOOGLE_API_KEY` to be set; without it the endpoint returns a graceful error card so the rest of the app keeps working. This pipeline is completely isolated from the chat/discuss flow — it never writes to `chat_sessions` or LangGraph state.
+The response is parsed as JSON with keys `overall_verdict`, `claims[]` (each with `claim`, `verdict`, `evidence`, `sources`), and `summary`.
+
+**Source filtering:** the `[Fact Check]` button is hidden server-side (Jinja2 `{% if not is_research %}`) for research/preprint sources: ArXiv AI, ArXiv ML, HuggingFace Blog, GitHub Blog, bioRxiv, PLOS Biology, eLife. It appears only on news sources where web-verifiable claims exist.
+
+Triggered **only** by the `[Fact Check]` button (`POST /news/fact-check`). Requires `GOOGLE_API_KEY`; returns a graceful error card if unset. Completely isolated from chat/discuss — never writes to `chat_sessions` or LangGraph state.
 
 ### 25.6 Agent Package Structure
 
 ```
 backend/agent/
 ├── graph.py         ← LangGraph StateGraph (Layer 3 — chat agent + checkpointer)
-├── pipeline.py      ← Google ADK SequentialAgent (Layer 5 — Search + Verdict)
+├── pipeline.py      ← Gemini + Google Search grounding (Layer 5 — fact-check)
 ├── prompts.py       ← All prompt constants:
 │                       SYSTEM_PROMPT (Layer 3 chat)
 │                       AUTO_TITLE_PROMPT
@@ -1681,10 +1741,11 @@ backend/agent/
 │                       MCQ_GENERATION_PROMPT
 │                       MCQ_FOLLOWUP_PROMPT  ← follow-up quiz targeting weak areas
 │                       RELEARN_PROMPT
-│                       FACT_CHECK_SEARCH_PROMPT (Layer 5)
-│                       FACT_CHECK_VERDICT_PROMPT (Layer 5)
+│                       FACT_CHECK_PROMPT (Layer 5 — inline in pipeline.py)
 └── tools.py         ← LangChain @tool: get_latest_ai_news
 ```
+
+> Note: `FACT_CHECK_PROMPT` is defined as a module-level constant in `pipeline.py` (not in `prompts.py`) since it is only ever used there.
 
 **`MCQ_FOLLOWUP_PROMPT`** wraps the previous attempt summary (per-question correct/wrong breakdown) and instructs the LLM to generate 8 new questions that probe wrong answers at a deeper level and test adjacent ideas for correct answers. No question text from the previous attempt may be reused verbatim.
 
@@ -1699,8 +1760,9 @@ The app uses a full-screen three-pane layout. The left sidebar is collapsible an
 │  LEFT SIDEBAR    │▌ │      CHAT (centre)            │▌ │  NEWS PANE  │
 │  resizable       │  │      flex-1                   │  │  resizable  │
 │  (toggleable)    │  │                               │  │             │
-│                  │  │  Message thread               │  │ [AI][Dev]   │
-│  [+ New Chat]    │  │  (HTMX append)                │  │ [World]     │
+│                  │  │  Message thread               │  │[AI] [Dev]   │
+│  [+ New Chat]    │  │  (HTMX append)                │  │[World][Bio] │
+│                  │  │                               │  │[Econ][Health]│
 │  ──────────      │  │                               │  │ ──────────  │
 │  Today           │  │  Inline quiz inside           │  │ Article     │
 │  ├─ Chat A ●     │  │  #chat-messages               │  │ cards       │
@@ -1726,12 +1788,128 @@ The app uses a full-screen three-pane layout. The left sidebar is collapsible an
 
 ---
 
-## 26. New Dependencies
+## 26. Dependencies
+
+Full `requirements.txt`:
 
 ```
-# requirements.txt additions
-google-adk>=0.5   # Google ADK — fact-check SequentialAgent (Layer 5)
-litellm>=1.40     # LiteLlm routing (available for future use)
+flask>=3.0
+flask-session>=0.8
+pydantic>=2.0
+flask-limiter[redis]>=3.5
+langgraph>=0.2
+langgraph-checkpoint-postgres>=2.0
+psycopg[binary]>=3.2
+psycopg-pool>=3.2
+langchain-openai>=0.2
+langchain-core>=0.3
+feedparser>=6.0
+python-dotenv>=1.0
+gunicorn>=22.0
+redis>=5.0
+apscheduler>=3.10
+bcrypt>=4.1
+google-genai>=1.0
+fastembed>=0.3
 ```
 
-`google-adk` provides the `SequentialAgent`, `LlmAgent`, and the native `google_search` tool used by the Layer 5 fact-check pipeline. The `litellm` dependency is installed as a transitive requirement of `google-adk` and is available for future routing of non-Gemini models through ADK if needed.
+**Notable packages:**
+- `google-genai` — current Google GenAI Python SDK (replaces the deprecated `google-generativeai`). Provides `google.genai.Client` and `types.Tool(google_search=types.GoogleSearch())` grounding for Layer 5. No ADK, no `litellm`.
+- `fastembed` — ONNX-runtime-based embedding library (~60 MB install, no PyTorch). Loads `sentence-transformers/all-MiniLM-L6-v2` (384-dim) for topic-news semantic search. Model is downloaded on first use and cached by the library. `numpy` is a transitive dependency. No GPU required — CPU inference takes ~150 ms for a batch of 150 articles. Chosen over `sentence-transformers` to avoid the ~1.5 GB PyTorch Docker layer.
+
+---
+
+## 27. Learning Platform Prompt Design
+
+The platform has four distinct AI interaction scenarios. Each maps to a learner's cognitive mode and uses a purpose-built prompt in `backend/agent/prompts.py`.
+
+### 27.1 The Four Scenarios
+
+| # | Trigger | Cognitive Mode | Goal | Prompt used |
+|---|---------|---------------|------|-------------|
+| 1 | User types a question in chat | Orientation or drilling, depending on question breadth | Show the complete concept map at the level asked — every major pillar covered | `SYSTEM_PROMPT` |
+| 2 | Explore button on a news card | Orientation anchored to a current event | Extract every conceptual pillar this news article touches — complete for its context, not the full domain | `DISCUSSION_PROMPT` |
+| 3 | Explore button on a response section | Drilling — user chose their path | Go exactly one level deeper into the clicked concept; cover ALL sub-components at that level | `LEARN_MORE_PROMPT` |
+| 4 | Quiz / Check Knowledge button | Assessment | Test retention of what was learned; no new teaching content | `MCQ_GENERATION_PROMPT` / `MCQ_FOLLOWUP_PROMPT` |
+
+### 27.2 The Completeness Mandate
+
+The single most important rule across all teaching prompts (1, 2, 3): **cover every major pillar at the current level**. A learner must be able to see the complete shape of the subject from one response. Missing a significant concept is treated as a prompt failure.
+
+This is what distinguishes the platform from a generic chatbot: a chatbot picks interesting points; a learning platform guarantees the map is complete.
+
+### 27.3 When to Give a Full Domain Map vs. Targeted Depth
+
+- **Broad question** ("explain machine learning", "what is the Roman Empire") → give the full domain map — all major areas covered at the top level
+- **Specific question** ("how does backpropagation work?", "what is RLHF?") → stay at that level but be exhaustive — cover ALL components of the specific concept asked
+- **News Explore** (Scenario 2) → stay at news-relevant level — cover all conceptual pillars this event touches, not the full domain
+- **Section Explore** (Scenario 3) → go one level deeper into the clicked concept only — do not revisit siblings from the parent response
+
+The rule: **match the abstraction level the user asked at, but be complete at that level.**
+
+### 27.4 Section Structure (`sectioned` response type)
+
+Every section in a teaching response carries these fields:
+
+| Field | Purpose |
+|---|---|
+| `id` | Unique section identifier (`"s1"`, `"s2"`, …) |
+| `title` | Name of the concept or component |
+| `content` | 2–3 sentence plain-English explanation — how it works and why it matters |
+| `key_points` | 3 concrete, testable learning points — specific facts, trade-offs, or mechanisms (not restatements of the title) |
+| `misconception` | The single most common wrong assumption about this concept — one sentence; prevents bad mental models from forming |
+| `learn_more_topic` | Specific sub-topic string for a deeper Explore follow-up session |
+
+### 27.5 Learning Progression Rule
+
+Sections within a response are always ordered:
+1. **Foundational concept** — what this thing is and why it exists
+2. **Core mechanism** — how it works internally
+3. **Application layer** — how it is used in practice
+4. **Advanced / edge cases** — nuance, trade-offs, limitations
+
+This ordering lets a user who reads top-to-bottom build understanding progressively. A user who wants depth first can skip ahead via Explore.
+
+### 27.6 Scenario 1 — `SYSTEM_PROMPT` (Manual Chat)
+
+Domain: **any topic** — technology, science, history, economics, biology, politics, mathematics. The domain lock to AI/ML that existed in earlier versions is removed. The right-side news panel covers AI/Dev/World/Bio/Econ/Health; the chat window should match that breadth.
+
+Key rules specific to this prompt:
+- `intro` must state what background knowledge is assumed (or "No prior knowledge needed")
+- Section count is adaptive: 4–6 typically, up to 7 for complex multi-pillar subjects; minimum 3
+- `outro` must give a concrete recommended exploration order: which section to explore first and why
+
+### 27.7 Scenario 2 — `DISCUSSION_PROMPT` (News Explore)
+
+The news article is the anchor. The response radiates outward from the event, not from the full domain.
+
+Key rules specific to this prompt:
+- `intro` states what areas of knowledge the news event touches and why they matter now
+- Sections cover concepts the event exposes — not the full field those concepts belong to
+- Do not discuss: people's personal actions, political opinions, specific dates/names as the main subject
+- Do write about: underlying laws, frameworks, mechanisms, historical/technical context
+
+### 27.8 Scenario 3 — `LEARN_MORE_PROMPT` (Section Explore)
+
+The user explicitly chose this sub-topic. They want depth, not breadth.
+
+Key rules specific to this prompt:
+- `intro` must include a one-sentence breadcrumb: "This is a deep-dive into [topic], a sub-component of [parent concept]." This prevents learners from getting lost after multiple Explore clicks.
+- Every sub-section must go exactly one level deeper than the parent topic — never restating the parent
+- `learn_more_topic` on each sub-section must be more specific than the section title
+
+### 27.9 Scenario 4 — MCQ Prompts (Assessment)
+
+Assessment prompts are intentionally separate from learning prompts. They never explain or teach — they only test and adapt.
+
+- `MCQ_GENERATION_PROMPT` — generates 8 questions from the current conversation; tests technical concepts, trade-offs, mechanisms
+- `MCQ_FOLLOWUP_PROMPT` — generates 8 adaptive questions after a previous attempt; prioritises wrong answers at a deeper level
+- `RELEARN_PROMPT` — per-question explanation triggered when a user gets a question wrong; 3–4 sentences of grounded explanation
+- Questions never ask about: names, dates, organisations, locations, trivia — only testable concepts
+
+### 27.10 Placeholder Text
+
+The chat input placeholder reflects the platform's domain breadth:
+> "Ask anything — science, history, technology, economics…"
+
+This replaces the old "Ask anything about AI, ML, or software…" which implied a domain restriction that no longer exists in the AI layer.

@@ -29,8 +29,14 @@ def _run_discussion_pipeline(user_message: str) -> dict:
 
 
 def news_discuss(user_id: str, article_id: str, article_title: str,
-                 article_summary: str, article_link: str) -> dict:
-    """Create a news_discussion session and generate first sectioned response."""
+                 article_summary: str, article_link: str,
+                 source_category: str | None = None) -> dict:
+    """Create a news_discussion session and generate first sectioned response.
+
+    source_category is the news-tab the user clicked Explore from (e.g. 'health').
+    Persisted on the session row so the topic-news panel can use it as a
+    guaranteed fallback without any inference.
+    """
     session = create_session(
         user_id=user_id,
         session_type='news_discussion',
@@ -38,6 +44,11 @@ def news_discuss(user_id: str, article_id: str, article_title: str,
         title=article_title[:80],
         topic=article_link,
     )
+    if source_category:
+        execute(
+            "UPDATE chat_sessions SET source_category = %s WHERE id = %s",
+            (source_category, session['id']),
+        )
 
     prompt = (
         DISCUSSION_PROMPT
@@ -65,7 +76,7 @@ def news_discuss(user_id: str, article_id: str, article_title: str,
 def create_learn_more(user_id: str, parent_session_id: str, topic: str) -> dict:
     """Create a learn_more child session and generate first sectioned response."""
     parent = query_one(
-        "SELECT id, user_id FROM chat_sessions WHERE id = %s AND user_id = %s",
+        "SELECT id, user_id, source_category, topic, title FROM chat_sessions WHERE id = %s AND user_id = %s",
         (parent_session_id, user_id),
     )
     if not parent:
@@ -79,8 +90,16 @@ def create_learn_more(user_id: str, parent_session_id: str, topic: str) -> dict:
         topic=topic,
         title=topic[:80],
     )
+    # Inherit source_category from parent so the news panel stays topically relevant
+    # throughout the full learn_more chain.
+    if parent.get("source_category"):
+        execute(
+            "UPDATE chat_sessions SET source_category = %s WHERE id = %s",
+            (parent["source_category"], session['id']),
+        )
 
-    prompt = LEARN_MORE_PROMPT.format(topic=topic)
+    parent_topic = parent.get("topic") or parent.get("title") or "the broader subject"
+    prompt = LEARN_MORE_PROMPT.format(topic=topic, parent_topic=parent_topic)
     first_response = _run_discussion_pipeline(prompt)
 
     try:

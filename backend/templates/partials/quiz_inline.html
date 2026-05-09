@@ -95,7 +95,7 @@
           </div>
         </div>
 
-        {# Relearn panel — uses outer quiz component state (no nested x-data) #}
+        {# Relearn panel — incorrect answers only #}
         <div
           x-show="submitted && answers[q.id] !== q.correct"
           class="border-t border-gray-100 px-4 py-2.5 bg-gray-50"
@@ -117,7 +117,6 @@
             <p x-show="relearn[q.id] && !relearn[q.id].loading"
                x-text="relearn[q.id] ? relearn[q.id].explanation : ''"
                class="text-xs text-amber-800 leading-relaxed whitespace-pre-wrap"></p>
-            {# Explore button — creates a learn_more sub-thread under this quiz session #}
             <div x-show="relearn[q.id] && !relearn[q.id].loading && relearn[q.id].explanation"
                  class="mt-2.5 pt-2 border-t border-amber-200 flex items-center justify-end">
               <button
@@ -142,6 +141,33 @@
               >✓ Loaded</span>
             </div>
           </div>
+        </div>
+
+        {# Explore panel — correct answers only, no explanation needed #}
+        <div
+          x-show="submitted && answers[q.id] === q.correct"
+          class="border-t border-gray-100 px-4 py-2 bg-gray-50 flex items-center justify-end"
+        >
+          <button
+            x-show="!(relearn[q.id] && relearn[q.id].exploreOpened)"
+            :disabled="relearn[q.id] ? relearn[q.id].exploreLoading : false"
+            @click="exploreRelearn(q.id, q.topic)"
+            class="flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg
+                   bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+          >
+            <span x-show="!(relearn[q.id] && relearn[q.id].exploreLoading)">Explore this topic</span>
+            <span x-show="relearn[q.id] && relearn[q.id].exploreLoading" class="flex items-center gap-1">
+              <svg class="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              Loading...
+            </span>
+          </button>
+          <span
+            x-show="relearn[q.id] && relearn[q.id].exploreOpened"
+            class="flex items-center gap-1 text-xs font-medium text-green-700"
+          >✓ Loaded</span>
         </div>
 
       </div>
