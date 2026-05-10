@@ -33,7 +33,10 @@
       "Bash(Measure-Object -Line)",
       "PowerShell(Get-Content *)",
       "Read(//c/Users/MSI/.claude/**)",
-      "Read(//c/Users/MSI/AppData/Roaming/Claude/**)"
+      "Read(//c/Users/MSI/AppData/Roaming/Claude/**)",
+      "Bash(Remove-Item -Path \"D:\\\\code-setup\\\\ai-agent\\\\tests\\\\js\" -Recurse -Force)",
+      "Bash(Remove-Item -Path \"D:\\\\code-setup\\\\ai-agent\\\\package.json\" -Force)",
+      "Bash(Remove-Item -Path \"D:\\\\code-setup\\\\ai-agent\\\\jest.config.js\" -Force)"
     ]
   }
 }

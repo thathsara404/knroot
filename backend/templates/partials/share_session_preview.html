@@ -95,12 +95,19 @@
     {% endif %}
 
   {% elif content.type == 'quiz' %}
+    {% if not content.questions %}
+      <div class="flex flex-col items-center justify-center py-12 text-center">
+        <div class="text-2xl mb-3">🧪</div>
+        <p class="text-sm font-medium text-gray-700 mb-1">{{ content.title }}</p>
+        <p class="text-xs text-gray-400">Quiz questions are not available in preview.</p>
+      </div>
+    {% else %}
     <script type="application/json" id="preview-qdata">{{ content.questions | tojson }}</script>
     <div x-data="previewQuizState()" x-init="init()" class="max-w-2xl mx-auto pb-6">
       <h3 class="text-sm font-semibold text-gray-800 mb-4">🧪 {{ content.title }}</h3>
 
       <div class="mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-xs text-amber-700">
-        ⚠️ Preview mode — answers are not saved
+        Preview mode — answers are not saved
       </div>
 
       <div x-show="submitted" class="mb-4 rounded-xl p-3 text-center text-xs font-medium"
@@ -161,6 +168,7 @@
         >Try Again</button>
       </div>
     </div>
+    {% endif %}
 
   {% else %}
     <p class="text-sm text-gray-400 text-center py-8">No content available.</p>

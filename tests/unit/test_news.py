@@ -2,7 +2,8 @@
 import json
 import pytest
 
-NEWS_SVC = "backend.api.news.service"
+# Routes import get_news directly, so mocks must target the routes namespace.
+NEWS_ROUTES = "backend.api.news.routes"
 PIPELINE = "backend.agent.pipeline"
 
 _ARTICLE = {
@@ -18,7 +19,7 @@ _ARTICLE = {
 # ── /news (public) ────────────────────────────────────────────────────────────
 
 def test_news_endpoint_returns_200(client, mocker):
-    mocker.patch(f"{NEWS_SVC}.get_news", return_value=[_ARTICLE])
+    mocker.patch(f"{NEWS_ROUTES}.get_news", return_value=[_ARTICLE])
     resp = client.get("/news?category=ai")
     assert resp.status_code == 200
     data = resp.get_json()
@@ -32,7 +33,7 @@ def test_news_endpoint_invalid_category_returns_422(client):
 
 
 def test_news_endpoint_default_category_is_ai(client, mocker):
-    mock = mocker.patch(f"{NEWS_SVC}.get_news", return_value=[])
+    mock = mocker.patch(f"{NEWS_ROUTES}.get_news", return_value=[])
     client.get("/news")
     mock.assert_called_with("ai", force=False)
 
@@ -45,26 +46,26 @@ def test_news_partial_requires_auth(client):
 
 
 def test_news_partial_returns_html(authed_client, mocker):
-    mocker.patch(f"{NEWS_SVC}.get_news", return_value=[_ARTICLE])
+    mocker.patch(f"{NEWS_ROUTES}.get_news", return_value=[_ARTICLE])
     resp = authed_client.get("/news/partial?category=ai")
     assert resp.status_code == 200
     assert b"Test Article" in resp.data
 
 
 def test_news_partial_invalid_category_defaults_to_ai(authed_client, mocker):
-    mock = mocker.patch(f"{NEWS_SVC}.get_news", return_value=[])
+    mock = mocker.patch(f"{NEWS_ROUTES}.get_news", return_value=[])
     authed_client.get("/news/partial?category=badcat")
     mock.assert_called_with("ai", force=False)
 
 
 def test_news_partial_programming_category(authed_client, mocker):
-    mock = mocker.patch(f"{NEWS_SVC}.get_news", return_value=[])
+    mock = mocker.patch(f"{NEWS_ROUTES}.get_news", return_value=[])
     authed_client.get("/news/partial?category=programming")
     mock.assert_called_with("programming", force=False)
 
 
 def test_news_partial_political_category(authed_client, mocker):
-    mock = mocker.patch(f"{NEWS_SVC}.get_news", return_value=[])
+    mock = mocker.patch(f"{NEWS_ROUTES}.get_news", return_value=[])
     authed_client.get("/news/partial?category=political")
     mock.assert_called_with("political", force=False)
 

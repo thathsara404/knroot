@@ -939,7 +939,7 @@ def get_session_preview_content(share_session_id: str, session_id: str) -> dict[
     Quiz: returns questions (no user answers) — purely ephemeral, never saved.
     """
     session = query_one(
-        "SELECT id, title, session_type, topic, linked_attempt_id "
+        "SELECT id, title, session_type, topic, linked_attempt_id, parent_session_id "
         "FROM chat_sessions WHERE id = %s",
         (session_id,),
     )
@@ -948,27 +948,49 @@ def get_session_preview_content(share_session_id: str, session_id: str) -> dict[
 
     session_type = session.get("session_type") or "regular"
 
-    if session_type == "quiz" and session.get("linked_attempt_id"):
-        attempt = query_one(
-            "SELECT questions FROM mcq_attempts WHERE id = %s",
-            (session["linked_attempt_id"],),
-        )
+    if session_type == "quiz":
+        import json as _json
+
+        linked_attempt_id = session.get("linked_attempt_id")
+        if linked_attempt_id:
+            linked_attempt_id = str(linked_attempt_id)
+        else:
+            # Fallback: quiz sessions link to mcq_attempts via parent session
+            parent_id = session.get("parent_session_id")
+            if parent_id:
+                row = query_one(
+                    "SELECT id FROM mcq_attempts WHERE session_id = %s "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (str(parent_id),),
+                )
+                if row:
+                    linked_attempt_id = str(row["id"])
+                    # Self-heal the missing FK so future loads are instant
+                    execute(
+                        "UPDATE chat_sessions SET linked_attempt_id = %s WHERE id = %s",
+                        (linked_attempt_id, session_id),
+                    )
+
         questions: list[dict[str, Any]] = []
-        if attempt and attempt.get("questions"):
-            raw_qs = attempt["questions"]
-            if isinstance(raw_qs, str):
-                import json as _json
-                raw_qs = _json.loads(raw_qs)
-            questions = [
-                {
-                    "id": q.get("id", str(i)),
-                    "text": q.get("text", ""),
-                    "options": q.get("options", []),
-                    "correct": q.get("correct", 0),
-                    "topic": q.get("topic", ""),
-                }
-                for i, q in enumerate(raw_qs)
-            ]
+        if linked_attempt_id:
+            attempt = query_one(
+                "SELECT questions FROM mcq_attempts WHERE id = %s",
+                (linked_attempt_id,),
+            )
+            if attempt and attempt.get("questions"):
+                raw_qs = attempt["questions"]
+                if isinstance(raw_qs, str):
+                    raw_qs = _json.loads(raw_qs)
+                questions = [
+                    {
+                        "id": q.get("id", str(i)),
+                        "text": q.get("text", ""),
+                        "options": q.get("options", []),
+                        "correct": q.get("correct", 0),
+                        "topic": q.get("topic", ""),
+                    }
+                    for i, q in enumerate(raw_qs)
+                ]
         return {
             "type": "quiz",
             "title": session.get("title") or "Knowledge Check",

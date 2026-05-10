@@ -204,3 +204,49 @@ def test_validate_rejects_short_question_text():
 def test_validate_accepts_valid_questions():
     from backend.api.quiz.generator import _validate
     _validate(_make_questions(8), n_required=8)  # must not raise
+
+
+# ── generator._shuffle_options — pure function ────────────────────────────────
+
+from backend.api.quiz.generator import _shuffle_options
+
+
+def test_shuffle_preserves_correct_answer_text():
+    q = {"text": "Question?", "options": ["A", "B", "C", "D"], "correct": 2}
+    result = _shuffle_options(q)
+    assert result["options"][result["correct"]] == "C"
+
+
+def test_shuffle_preserves_all_option_values():
+    q = {"text": "Question?", "options": ["A", "B", "C", "D"], "correct": 0}
+    result = _shuffle_options(q)
+    assert sorted(result["options"]) == ["A", "B", "C", "D"]
+
+
+def test_shuffle_correct_index_stays_in_range():
+    q = {"text": "Question?", "options": ["W", "X", "Y", "Z"], "correct": 3}
+    result = _shuffle_options(q)
+    assert 0 <= result["correct"] <= 3
+
+
+def test_shuffle_preserves_non_option_fields():
+    q = {"id": "q1", "text": "Question?", "options": ["A", "B", "C", "D"], "correct": 1, "topic": "ML"}
+    result = _shuffle_options(q)
+    assert result["id"] == "q1"
+    assert result["topic"] == "ML"
+    assert result["text"] == "Question?"
+
+
+def test_shuffle_does_not_mutate_original():
+    original_options = ["A", "B", "C", "D"]
+    q = {"text": "Question?", "options": list(original_options), "correct": 0}
+    _shuffle_options(q)
+    assert q["options"] == original_options
+
+
+def test_shuffle_correct_pointer_consistent_across_runs():
+    q = {"text": "Question?", "options": ["A", "B", "C", "D"], "correct": 2}
+    correct_text = q["options"][q["correct"]]
+    for _ in range(20):
+        result = _shuffle_options(q)
+        assert result["options"][result["correct"]] == correct_text

@@ -137,3 +137,99 @@ def test_knowledge_tree_partial_renders(authed_client, mocker):
     resp = authed_client.get("/sessions/sess-uuid-1/knowledge-tree/partial")
     assert resp.status_code == 200
     assert b"Knowledge Tree" in resp.data
+
+
+# ── regenerate ────────────────────────────────────────────────────────────────
+
+def test_regenerate_session_requires_auth(client):
+    assert client.post("/sessions/sess-1/regenerate").status_code == 401
+
+
+def test_regenerate_session_returns_result(authed_client, mocker):
+    mocker.patch(f"{SVC}.regenerate_session", return_value={"session_id": "sess-2", "status": "regenerated"})
+    resp = authed_client.post("/sessions/sess-1/regenerate")
+    assert resp.status_code == 200
+    assert resp.get_json()["session_id"] == "sess-2"
+
+
+def test_regenerate_session_calls_service_with_user_and_session(authed_client, mocker):
+    mock = mocker.patch(f"{SVC}.regenerate_session", return_value={"session_id": "sess-1"})
+    authed_client.post("/sessions/sess-1/regenerate")
+    mock.assert_called_once_with("user-uuid-1234", "sess-1")
+
+
+# ── get_tree ──────────────────────────────────────────────────────────────────
+
+def test_get_tree_requires_auth(client):
+    assert client.get("/sessions/sess-1/tree").status_code == 401
+
+
+def test_get_tree_returns_list(authed_client, mocker):
+    mocker.patch(f"{SVC}.get_tree", return_value=[_SESSION])
+    resp = authed_client.get("/sessions/sess-uuid-1/tree")
+    assert resp.status_code == 200
+    assert isinstance(resp.get_json(), list)
+
+
+def test_get_tree_returns_empty_list(authed_client, mocker):
+    mocker.patch(f"{SVC}.get_tree", return_value=[])
+    resp = authed_client.get("/sessions/sess-uuid-1/tree")
+    assert resp.status_code == 200
+    assert resp.get_json() == []
+
+
+# ── tree_partial ──────────────────────────────────────────────────────────────
+
+def test_tree_partial_requires_auth(client):
+    assert client.get("/sessions/sess-1/tree/partial").status_code == 302
+
+
+def test_tree_partial_renders(authed_client, mocker):
+    mocker.patch(f"{SVC}.get_tree", return_value=[_SESSION])
+    resp = authed_client.get("/sessions/sess-uuid-1/tree/partial")
+    assert resp.status_code == 200
+
+
+# ── messages_partial ──────────────────────────────────────────────────────────
+
+def test_messages_partial_requires_auth(client):
+    assert client.get("/sessions/sess-1/messages/partial").status_code == 302
+
+
+def test_messages_partial_renders_regular_session(authed_client, mocker):
+    mocker.patch(f"{SVC}.get_session", return_value={**_SESSION, "session_type": "regular"})
+    mocker.patch(f"{SVC}.get_messages", return_value=[_MSG])
+    resp = authed_client.get("/sessions/sess-uuid-1/messages/partial")
+    assert resp.status_code == 200
+
+
+def test_messages_partial_renders_quiz_inline_when_attempt_linked(authed_client, mocker):
+    quiz_sess = {**_SESSION, "session_type": "quiz", "linked_attempt_id": "attempt-1"}
+    mocker.patch(f"{SVC}.get_session", return_value=quiz_sess)
+    mocker.patch("backend.api.quiz.service.get_attempt", return_value={
+        "attempt_id": "attempt-1", "session_id": "sess-uuid-1",
+        "questions": [], "answers": {}, "score": None, "completed_at": None,
+    })
+    resp = authed_client.get("/sessions/sess-uuid-1/messages/partial")
+    assert resp.status_code == 200
+
+
+def test_messages_partial_falls_back_to_messages_for_quiz_without_attempt(authed_client, mocker):
+    quiz_sess = {**_SESSION, "session_type": "quiz", "linked_attempt_id": None}
+    mocker.patch(f"{SVC}.get_session", return_value=quiz_sess)
+    mocker.patch(f"{SVC}.get_messages", return_value=[_MSG])
+    resp = authed_client.get("/sessions/sess-uuid-1/messages/partial")
+    assert resp.status_code == 200
+
+
+def test_messages_partial_renders_news_discussion_session(authed_client, mocker):
+    news_sess = {
+        **_SESSION,
+        "session_type": "news_discussion",
+        "topic": "https://example.com/article",
+        "title": "AI Takes Over",
+    }
+    mocker.patch(f"{SVC}.get_session", return_value=news_sess)
+    mocker.patch(f"{SVC}.get_messages", return_value=[_MSG])
+    resp = authed_client.get("/sessions/sess-uuid-1/messages/partial")
+    assert resp.status_code == 200

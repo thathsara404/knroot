@@ -11,7 +11,7 @@ MYPY  := $(VENV)/bin/mypy
         up-infra backend \
         playwright-install test-unit test-int test-e2e test \
         lint shell-db shell-redis \
-        flush-cache
+        flush-cache clean-wall
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
@@ -103,6 +103,13 @@ flush-cache:
 	@echo "[dev] Flushing Redis news caches (news:*)..."
 	@docker compose --profile dev exec -T redis sh -c "redis-cli --scan --pattern 'news:*' | xargs -r redis-cli del"
 	@echo "[dev] Done. Caches repopulate automatically on the next request."
+
+# ── Data cleanup ─────────────────────────────────────────────────────────────
+
+clean-wall:
+	@echo "[dev] Deleting all shares, votes, comments, saves, and score events..."
+	@docker compose --profile dev exec -T db psql -U postgres -d postgres -c "DELETE FROM shares;"
+	@echo "[dev] Done. Community wall is empty."
 
 # ── Lint ──────────────────────────────────────────────────────────────────────
 
