@@ -9,9 +9,8 @@ bp = Blueprint('pages', __name__)
 
 @bp.get('/')
 def root():
-    if session.get('user_id'):
-        return redirect(url_for('pages.index'))
-    return redirect(url_for('pages.login'))
+    is_logged_in = bool(session.get('user_id'))
+    return render_template('landing.html', is_logged_in=is_logged_in)
 
 
 @bp.get('/login')

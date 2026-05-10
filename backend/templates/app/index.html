@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Dashboard — Knowledge Root{% endblock %}
+{% block title %}Dashboard — Mathemariza{% endblock %}
 
 {% block nav %}
 <nav class="border-b border-gray-200 bg-white shadow-sm">
@@ -16,7 +16,7 @@
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
         </svg>
       </button>
-      <span class="text-lg font-bold bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">Knowledge Root</span>
+      <span class="text-lg font-bold bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">Mathemariza</span>
     </div>
     <form hx-post="/auth/logout" hx-headers='{"HX-Request": "true"}'>
       <button
@@ -196,7 +196,7 @@
             @click="switchTab('root')"
             :class="activeTab === 'root' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'"
             class="flex-1 min-w-[80px] flex flex-col items-center gap-0.5 py-2.5 text-xs font-medium transition-colors"
-            title="Knowledge Root"
+            title="Mathemariza"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
