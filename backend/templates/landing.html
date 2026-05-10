@@ -9,27 +9,36 @@
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
   <style>
     [x-cloak] { display: none !important; }
-    @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
-    @keyframes pulse-slow { 0%,100%{opacity:.6} 50%{opacity:1} }
-    @keyframes slide-up { from{opacity:0;transform:translateY(24px)} to{opacity:1;transform:translateY(0)} }
+    @keyframes pulse-slow { 0%,100%{opacity:.5} 50%{opacity:1} }
+    @keyframes slide-up { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+    @keyframes fade-in { from{opacity:0} to{opacity:1} }
     @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
-    .animate-float { animation: float 4s ease-in-out infinite; }
-    .animate-pulse-slow { animation: pulse-slow 3s ease-in-out infinite; }
-    .animate-slide-up { animation: slide-up .6s ease both; }
+    .animate-pulse-slow { animation: pulse-slow 4s ease-in-out infinite; }
+    .animate-slide-up { animation: slide-up .65s cubic-bezier(.22,1,.36,1) both; }
+    .animate-fade-in { animation: fade-in .8s ease both; }
     .animate-blink { animation: blink 1.2s step-end infinite; }
-    .delay-100 { animation-delay:.1s }
-    .delay-200 { animation-delay:.2s }
-    .delay-300 { animation-delay:.3s }
-    .delay-400 { animation-delay:.4s }
+    .delay-100 { animation-delay:.1s } .delay-200 { animation-delay:.2s }
+    .delay-300 { animation-delay:.3s } .delay-400 { animation-delay:.4s }
     .delay-500 { animation-delay:.5s }
     .gradient-text {
       background: linear-gradient(135deg,#6366f1,#8b5cf6,#a78bfa);
-      -webkit-background-clip:text;
-      -webkit-text-fill-color:transparent;
-      background-clip:text;
+      -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
     }
-    .card-glow { transition: box-shadow .2s ease; }
-    .card-glow:hover { box-shadow: 0 0 0 1px #6366f120, 0 8px 32px #6366f118; }
+    .eyebrow {
+      display:inline-block; font-size:.68rem; font-weight:600; letter-spacing:.14em;
+      text-transform:uppercase; color:#818cf8; margin-bottom:1.1rem;
+    }
+    .card-glow { transition: box-shadow .25s ease, border-color .25s ease, background .25s ease; }
+    .card-glow:hover { box-shadow: 0 0 0 1px rgba(99,102,241,.2), 0 16px 48px rgba(99,102,241,.10); }
+    .step-card { transition: border-color .2s ease, box-shadow .2s ease; }
+    .step-card:hover { border-color: rgba(99,102,241,.25); box-shadow: 0 4px 24px rgba(99,102,241,.08); }
+    .nav-link::after {
+      content: ''; position: absolute; bottom: -4px; left: 0; right: 0;
+      height: 1.5px; background: linear-gradient(90deg,#6366f1,#8b5cf6);
+      border-radius: 9999px; transform: scaleX(0); transition: transform .2s ease;
+    }
+    .nav-link.active { color: #fff; }
+    .nav-link.active::after { transform: scaleX(1); }
   </style>
 </head>
 <body class="bg-[#0a0a12] text-white antialiased overflow-x-hidden" x-data="{ mobileMenuOpen: false }">
@@ -51,9 +60,9 @@
     </a>
 
     <nav class="hidden md:flex items-center gap-8 text-sm font-medium text-gray-400">
-      <a href="#features"     class="hover:text-white transition-colors">Features</a>
-      <a href="#how-it-works" class="hover:text-white transition-colors">How it works</a>
-      <a href="#community"    class="hover:text-white transition-colors">Community</a>
+      <a href="#features"     data-nav="features"     class="nav-link relative hover:text-white transition-colors duration-200">Features</a>
+      <a href="#how-it-works" data-nav="how-it-works" class="nav-link relative hover:text-white transition-colors duration-200">How it works</a>
+      <a href="#community"    data-nav="community"    class="nav-link relative hover:text-white transition-colors duration-200">Community</a>
     </nav>
 
     <div class="flex items-center gap-3">
@@ -80,11 +89,12 @@
   </div>
 </header>
 
-<!-- Scroll root canvas — positioned dynamically inside the left margin -->
+<!-- Scroll root canvas — commented out temporarily
 <canvas id="sr-canvas"
         class="fixed pointer-events-none select-none"
         style="top:64px; left:0; z-index:15; display:none">
 </canvas>
+-->
 
 <!-- HERO -->
 <section class="relative min-h-screen flex items-center pt-16 overflow-hidden">
@@ -106,56 +116,44 @@
 
       <!-- Left: copy -->
       <div class="animate-slide-up">
-        <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-medium mb-8">
-          <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse"></span>
-          Plant a question. Grow a root system.
-        </div>
-
-        <h1 class="text-5xl sm:text-6xl lg:text-7xl font-black tracking-tight leading-[1.05] mb-6">
+        <h1 class="text-5xl sm:text-6xl lg:text-7xl font-black tracking-tight leading-[1.06] mb-6">
           Knowledge grows<br>
           <span class="gradient-text">like roots.</span>
         </h1>
 
-        <p class="text-lg text-gray-400 leading-relaxed mb-4">
-          Real tree roots don't follow a fixed plan. They grow exactly where they need to,
-          branching wide, driving deep, finding their own path through any terrain.
-        </p>
-        <p class="text-lg text-gray-400 leading-relaxed mb-10">
-          Mathemariza works the same way. Start from any news story, branch into any concept,
-          and go as deep as your curiosity demands. Your knowledge becomes a living root system,
-          shaped entirely by your own questions.
+        <p class="text-lg text-gray-400 leading-[1.75] mb-10 max-w-lg">
+          Start from any news story, branch into any concept, and go as deep as your curiosity
+          demands. Your knowledge becomes a living root system shaped entirely by your own questions.
         </p>
 
-        <div class="flex flex-col sm:flex-row items-start gap-4">
-          {% if is_logged_in %}
-          <a href="/app"
-             class="px-8 py-3.5 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600
-                    font-semibold text-white shadow-2xl shadow-indigo-500/30
-                    hover:shadow-indigo-500/50 hover:scale-105 transition-all duration-200 text-base">
-            Continue Learning
-          </a>
-          {% else %}
+        <div class="flex flex-col sm:flex-row items-start gap-3">
           <a href="/register"
-             class="px-8 py-3.5 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600
-                    font-semibold text-white shadow-2xl shadow-indigo-500/30
-                    hover:shadow-indigo-500/50 hover:scale-105 transition-all duration-200 text-base">
+             class="px-7 py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600
+                    font-semibold text-white shadow-xl shadow-indigo-500/30
+                    hover:from-indigo-500 hover:to-violet-500 hover:shadow-indigo-500/40
+                    hover:scale-[1.02] transition-all duration-200 text-sm">
             Plant Your First Root
           </a>
           <a href="/login"
-             class="px-8 py-3.5 rounded-2xl border border-white/10 bg-white/5 font-semibold text-gray-300
-                    hover:bg-white/10 hover:border-white/20 transition-all text-base">
+             class="px-7 py-3.5 rounded-xl border border-white/10 bg-white/5 font-semibold
+                    text-gray-300 hover:bg-white/10 hover:border-white/20 transition-all text-sm">
             Sign In
           </a>
-          {% endif %}
         </div>
+        <p class="text-xs text-gray-600 font-medium mt-5">Plant a question. Grow a root system.</p>
       </div>
 
       <!-- Right: live root system visual -->
       <div class="animate-slide-up delay-300">
         <div class="bg-gradient-to-b from-[#13131f] to-[#0d0d1a] rounded-3xl border border-white/8 shadow-2xl overflow-hidden">
 
+          <!-- Session start hint -->
+          <div class="px-5 pt-4 pb-3 border-b border-white/5 text-[11px] text-gray-500 leading-[1.6]">
+            Select a live news story below and press <span class="text-gray-300 font-semibold">Explore</span> to grow your first knowledge root. Or tap <span class="text-gray-300 font-semibold">+</span> in the left navigation panel to start a session with any question of your own.
+          </div>
+
           <!-- Seed: news article -->
-          <div class="px-5 pt-5 pb-4 border-b border-white/5">
+          <div class="px-5 pt-4 pb-4 border-b border-white/5">
             <div class="flex items-center gap-3 px-3 py-2.5 bg-indigo-500/10 border border-indigo-500/20 rounded-xl">
               <span class="text-base">📰</span>
               <div class="flex-1 min-w-0">
@@ -230,23 +228,25 @@
 </section>
 
 <!-- STATS BAR -->
-<section class="relative py-12 border-y border-white/5 bg-white/[0.02]">
-  <div class="max-w-5xl mx-auto px-4 grid grid-cols-2 sm:grid-cols-4 gap-8 text-center">
-    <div>
-      <p class="text-3xl font-black gradient-text">∞</p>
-      <p class="text-xs text-gray-500 mt-1 font-medium uppercase tracking-wider">Branch depth</p>
-    </div>
-    <div>
-      <p class="text-3xl font-black gradient-text">6</p>
-      <p class="text-xs text-gray-500 mt-1 font-medium uppercase tracking-wider">News seed categories</p>
-    </div>
-    <div>
-      <p class="text-3xl font-black gradient-text">AI</p>
-      <p class="text-xs text-gray-500 mt-1 font-medium uppercase tracking-wider">Guided branching</p>
-    </div>
-    <div>
-      <p class="text-3xl font-black gradient-text">0</p>
-      <p class="text-xs text-gray-500 mt-1 font-medium uppercase tracking-wider">Imposed limits</p>
+<section class="relative py-10 border-y border-white/5 bg-white/[0.015]">
+  <div class="max-w-4xl mx-auto px-4">
+    <div class="grid grid-cols-2 sm:grid-cols-4 divide-x divide-white/5">
+      <div class="text-center px-6 py-2">
+        <p class="text-3xl font-black gradient-text mb-1">∞</p>
+        <p class="text-[11px] text-gray-500 font-medium uppercase tracking-widest">Branch depth</p>
+      </div>
+      <div class="text-center px-6 py-2">
+        <p class="text-3xl font-black gradient-text mb-1">6</p>
+        <p class="text-[11px] text-gray-500 font-medium uppercase tracking-widest">News categories</p>
+      </div>
+      <div class="text-center px-6 py-2">
+        <p class="text-3xl font-black gradient-text mb-1">MCQ</p>
+        <p class="text-[11px] text-gray-500 font-medium uppercase tracking-widest">AI quiz per session</p>
+      </div>
+      <div class="text-center px-6 py-2">
+        <p class="text-3xl font-black gradient-text mb-1">5★</p>
+        <p class="text-[11px] text-gray-500 font-medium uppercase tracking-widest">Community ranking</p>
+      </div>
     </div>
   </div>
 </section>
@@ -254,179 +254,206 @@
 <!-- FEATURES -->
 <section id="features" class="py-28 max-w-7xl mx-auto px-4 sm:px-6">
   <div class="text-center mb-16">
-    <h2 class="text-4xl sm:text-5xl font-black tracking-tight mb-4">
-      Every root needs the<br><span class="gradient-text">right conditions to grow</span>
+    <span class="eyebrow">Features</span>
+    <h2 class="text-4xl sm:text-5xl font-black tracking-tight mb-4 leading-[1.1]">
+      Everything your curiosity<br><span class="gradient-text">needs to take root</span>
     </h2>
-    <p class="text-gray-400 text-lg max-w-xl mx-auto">
-      Mathemariza gives your curiosity everything it needs: real-world seeds, infinite branching,
-      strength testing, and a community to grow alongside.
+    <p class="text-gray-500 text-base max-w-lg mx-auto leading-relaxed">
+      Real-world seeds, infinite branching, strength testing, and a community to grow alongside.
     </p>
   </div>
 
-  <div class="grid md:grid-cols-3 gap-6">
+  <div class="grid md:grid-cols-3 gap-4">
 
-    <div class="group bg-[#13131f] rounded-2xl border border-white/6 p-6 card-glow">
-      <div class="text-2xl mb-4">🌱</div>
-      <h3 class="text-base font-bold text-white mb-2">Seed from Real News</h3>
-      <p class="text-sm text-gray-500 leading-relaxed">
-        Every root system starts with a seed. Pick any live news story across AI, biology, economics,
-        geopolitics, health, or tech. Plant it as your starting point. Real context makes
-        knowledge grow faster and stick longer.
+    <div class="group relative bg-[#0f0f1a] rounded-2xl border border-white/[0.07] p-7 overflow-hidden card-glow hover:border-indigo-500/30 transition-all duration-300">
+      <div class="absolute left-0 top-6 bottom-6 w-px bg-gradient-to-b from-indigo-500/40 via-indigo-400/20 to-transparent rounded-full"></div>
+      <div class="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-indigo-500/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+      <div class="absolute inset-0 bg-gradient-to-br from-indigo-600/[0.07] to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 rounded-2xl pointer-events-none"></div>
+      <h3 class="text-[15px] font-semibold text-white mb-2.5 group-hover:text-indigo-100 transition-colors duration-200">Seed from Real News</h3>
+      <p class="text-sm text-gray-500 leading-[1.7] group-hover:text-gray-400 transition-colors duration-200">
+        The AI curates the hottest stories across AI, biology, economics, geopolitics, health, and tech — refreshed daily. Pick one as your seed and real-world context makes the knowledge grow faster and stick longer.
       </p>
+      <div class="absolute bottom-5 right-5 opacity-0 group-hover:opacity-40 translate-x-1 group-hover:translate-x-0 transition-all duration-200">
+        <svg class="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 17L17 7M17 7H7M17 7v10"/></svg>
+      </div>
     </div>
 
-    <div class="group bg-[#13131f] rounded-2xl border border-white/6 p-6 card-glow">
-      <div class="text-2xl mb-4">🌿</div>
-      <h3 class="text-base font-bold text-white mb-2">Branch in Any Direction</h3>
-      <p class="text-sm text-gray-500 leading-relaxed">
-        Like roots searching for nutrients, every concept can fork. Hit "Learn More" on any idea and
-        the AI grows a new branch, going wider, deeper, or sideways into adjacent knowledge.
-        No imposed structure. No ceiling.
+    <div class="group relative bg-[#0f0f1a] rounded-2xl border border-white/[0.07] p-7 overflow-hidden card-glow hover:border-violet-500/30 transition-all duration-300">
+      <div class="absolute left-0 top-6 bottom-6 w-px bg-gradient-to-b from-violet-500/40 via-violet-400/20 to-transparent rounded-full"></div>
+      <div class="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-violet-500/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+      <div class="absolute inset-0 bg-gradient-to-br from-violet-600/[0.07] to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 rounded-2xl pointer-events-none"></div>
+      <h3 class="text-[15px] font-semibold text-white mb-2.5 group-hover:text-violet-100 transition-colors duration-200">Branch in Any Direction</h3>
+      <p class="text-sm text-gray-500 leading-[1.7] group-hover:text-gray-400 transition-colors duration-200">
+        Every concept can fork. Hit "Learn More" and the AI grows a new branch, going wider, deeper,
+        or sideways into adjacent knowledge. No imposed structure. No ceiling.
       </p>
+      <div class="absolute bottom-5 right-5 opacity-0 group-hover:opacity-40 translate-x-1 group-hover:translate-x-0 transition-all duration-200">
+        <svg class="w-3.5 h-3.5 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 17L17 7M17 7H7M17 7v10"/></svg>
+      </div>
     </div>
 
-    <div class="group bg-[#13131f] rounded-2xl border border-white/6 p-6 card-glow">
-      <div class="text-2xl mb-4">🧠</div>
-      <h3 class="text-base font-bold text-white mb-2">Test Your Root Strength</h3>
-      <p class="text-sm text-gray-500 leading-relaxed">
-        Strong roots don't just grow, they hold. AI-generated MCQ quizzes test your entire branch
-        ancestry. Miss one? Relearn and retry. Pass? Branch even deeper from that exact node.
+    <div class="group relative bg-[#0f0f1a] rounded-2xl border border-white/[0.07] p-7 overflow-hidden card-glow hover:border-purple-500/30 transition-all duration-300">
+      <div class="absolute left-0 top-6 bottom-6 w-px bg-gradient-to-b from-purple-500/40 via-purple-400/20 to-transparent rounded-full"></div>
+      <div class="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-purple-500/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+      <div class="absolute inset-0 bg-gradient-to-br from-purple-600/[0.07] to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 rounded-2xl pointer-events-none"></div>
+      <h3 class="text-[15px] font-semibold text-white mb-2.5 group-hover:text-purple-100 transition-colors duration-200">Test Your Root Strength</h3>
+      <p class="text-sm text-gray-500 leading-[1.7] group-hover:text-gray-400 transition-colors duration-200">
+        AI-generated MCQ quizzes test your entire branch ancestry. Miss one? Relearn and retry.
+        Pass? Branch even deeper from that exact node.
       </p>
+      <div class="absolute bottom-5 right-5 opacity-0 group-hover:opacity-40 translate-x-1 group-hover:translate-x-0 transition-all duration-200">
+        <svg class="w-3.5 h-3.5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 17L17 7M17 7H7M17 7v10"/></svg>
+      </div>
     </div>
 
-    <div class="group bg-[#13131f] rounded-2xl border border-white/6 p-6 card-glow">
-      <div class="text-2xl mb-4">🗺️</div>
-      <h3 class="text-base font-bold text-white mb-2">See Your Root System</h3>
-      <p class="text-sm text-gray-500 leading-relaxed">
-        Every session builds a live knowledge tree, a visual map of where your roots have spread.
-        Foundational concepts at the top, advanced branches below. Your entire learning journey
-        visible at a glance, navigable at any node.
+    <div class="group relative bg-[#0f0f1a] rounded-2xl border border-white/[0.07] p-7 overflow-hidden card-glow hover:border-indigo-500/30 transition-all duration-300">
+      <div class="absolute left-0 top-6 bottom-6 w-px bg-gradient-to-b from-indigo-400/40 via-indigo-400/20 to-transparent rounded-full"></div>
+      <div class="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-indigo-400/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+      <div class="absolute inset-0 bg-gradient-to-br from-indigo-500/[0.07] to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 rounded-2xl pointer-events-none"></div>
+      <h3 class="text-[15px] font-semibold text-white mb-2.5 group-hover:text-indigo-100 transition-colors duration-200">See Your Root System</h3>
+      <p class="text-sm text-gray-500 leading-[1.7] group-hover:text-gray-400 transition-colors duration-200">
+        Every session builds a live knowledge tree, with foundational concepts at the top, advanced
+        branches below. Your entire learning journey visible at a glance, navigable at any node.
       </p>
+      <div class="absolute bottom-5 right-5 opacity-0 group-hover:opacity-40 translate-x-1 group-hover:translate-x-0 transition-all duration-200">
+        <svg class="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 17L17 7M17 7H7M17 7v10"/></svg>
+      </div>
     </div>
 
-    <div class="group bg-[#13131f] rounded-2xl border border-white/6 p-6 card-glow">
-      <div class="text-2xl mb-4">🌳</div>
-      <h3 class="text-base font-bold text-white mb-2">Community Root Garden</h3>
-      <p class="text-sm text-gray-500 leading-relaxed">
-        Share your root system publicly. Others can explore your branches, import them into their own
-        journey, add comments, and keep growing from where you left off. Roots shared are roots
-        strengthened.
+    <div class="group relative bg-[#0f0f1a] rounded-2xl border border-white/[0.07] p-7 overflow-hidden card-glow hover:border-violet-500/30 transition-all duration-300">
+      <div class="absolute left-0 top-6 bottom-6 w-px bg-gradient-to-b from-violet-400/40 via-violet-400/20 to-transparent rounded-full"></div>
+      <div class="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-violet-400/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+      <div class="absolute inset-0 bg-gradient-to-br from-violet-500/[0.07] to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 rounded-2xl pointer-events-none"></div>
+      <h3 class="text-[15px] font-semibold text-white mb-2.5 group-hover:text-violet-100 transition-colors duration-200">Community Root Garden</h3>
+      <p class="text-sm text-gray-500 leading-[1.7] group-hover:text-gray-400 transition-colors duration-200">
+        Share your root system publicly. Others can explore your branches, import them into their
+        own journey, and keep growing from where you stopped.
       </p>
+      <div class="absolute bottom-5 right-5 opacity-0 group-hover:opacity-40 translate-x-1 group-hover:translate-x-0 transition-all duration-200">
+        <svg class="w-3.5 h-3.5 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 17L17 7M17 7H7M17 7v10"/></svg>
+      </div>
     </div>
 
-    <div class="group bg-[#13131f] rounded-2xl border border-white/6 p-6 card-glow">
-      <div class="text-2xl mb-4">⭐</div>
-      <h3 class="text-base font-bold text-white mb-2">Earn Your Star Rating</h3>
-      <p class="text-sm text-gray-500 leading-relaxed">
-        Earn points when the community upvotes your shared roots. Reach 1,000 upvotes for your first star
-        and climb to 10 million for the fifth. The deeper your roots grow, the stronger your reputation
-        becomes.
+    <div class="group relative bg-[#0f0f1a] rounded-2xl border border-white/[0.07] p-7 overflow-hidden card-glow hover:border-purple-500/30 transition-all duration-300">
+      <div class="absolute left-0 top-6 bottom-6 w-px bg-gradient-to-b from-purple-400/40 via-purple-400/20 to-transparent rounded-full"></div>
+      <div class="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-purple-400/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+      <div class="absolute inset-0 bg-gradient-to-br from-purple-500/[0.07] to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 rounded-2xl pointer-events-none"></div>
+      <h3 class="text-[15px] font-semibold text-white mb-2.5 group-hover:text-purple-100 transition-colors duration-200">Earn Your Star Rating</h3>
+      <p class="text-sm text-gray-500 leading-[1.7] group-hover:text-gray-400 transition-colors duration-200">
+        Earn points when the community upvotes your shared roots. Reach 1,000 upvotes for your
+        first star, climb to 10 million for the fifth.
       </p>
+      <div class="absolute bottom-5 right-5 opacity-0 group-hover:opacity-40 translate-x-1 group-hover:translate-x-0 transition-all duration-200">
+        <svg class="w-3.5 h-3.5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 17L17 7M17 7H7M17 7v10"/></svg>
+      </div>
     </div>
 
   </div>
 </section>
 
 <!-- HOW IT WORKS -->
-<section id="how-it-works" class="py-28 bg-gradient-to-b from-transparent via-indigo-950/10 to-transparent">
+<section id="how-it-works" class="py-28 bg-gradient-to-b from-transparent via-indigo-950/8 to-transparent">
   <div class="max-w-6xl mx-auto px-4 sm:px-6">
     <div class="text-center mb-16">
-      <h2 class="text-4xl sm:text-5xl font-black tracking-tight mb-4">
-        Watch a root system<br><span class="gradient-text">come to life</span>
+      <span class="eyebrow">How it works</span>
+      <h2 class="text-4xl sm:text-5xl font-black tracking-tight mb-4 leading-[1.1]">
+        From seed to root system<br><span class="gradient-text">in four steps</span>
       </h2>
-      <p class="text-gray-400 text-lg max-w-lg mx-auto">
-        Four steps to plant your seed. Then it grows wherever your curiosity leads.
+      <p class="text-gray-500 text-base max-w-md mx-auto leading-relaxed">
+        Plant your first question. Then let it grow wherever your curiosity leads.
       </p>
     </div>
 
     <div class="grid lg:grid-cols-5 gap-8 items-start">
 
-      <!-- Steps: 3 cols -->
-      <div class="lg:col-span-3 space-y-4">
+      <!-- Steps -->
+      <div class="lg:col-span-3 relative">
 
-        <div class="flex gap-5 items-start bg-[#13131f] rounded-2xl border border-white/6 p-5 card-glow">
-          <div class="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-indigo-700 flex items-center justify-center text-sm font-black shadow-lg shadow-indigo-500/20">1</div>
-          <div>
-            <h3 class="font-bold text-white mb-1">Choose your seed</h3>
-            <p class="text-sm text-gray-500">
-              Browse live news across 6 categories. Any article, from a quantum computing
-              breakthrough to a central bank decision, can become the seed of a deep root system.
-            </p>
+        <div class="space-y-3">
+          <div class="flex gap-5 items-start bg-[#0f0f1a] rounded-xl border border-white/[0.07] p-5 step-card">
+            <div class="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-indigo-700 flex items-center justify-center text-sm font-black shadow-lg shadow-indigo-500/20 relative z-10">1</div>
+            <div>
+              <h3 class="font-semibold text-white mb-1 text-[15px]">Choose your seed</h3>
+              <p class="text-sm text-gray-500 leading-[1.7]">
+                Browse live news across 6 categories. Any article, from a quantum computing
+                breakthrough to a central bank decision, can become the seed of a deep root system.
+              </p>
+            </div>
+          </div>
+
+          <div class="flex gap-5 items-start bg-[#0f0f1a] rounded-xl border border-white/[0.07] p-5 step-card">
+            <div class="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-violet-600 to-violet-700 flex items-center justify-center text-sm font-black shadow-lg shadow-violet-500/20 relative z-10">2</div>
+            <div>
+              <h3 class="font-semibold text-white mb-1 text-[15px]">Grow your first root</h3>
+              <p class="text-sm text-gray-500 leading-[1.7]">
+                Hit Explore. The AI extracts core concepts behind the story and maps them from
+                foundational to advanced. Your first branch emerges instantly.
+              </p>
+            </div>
+          </div>
+
+          <div class="flex gap-5 items-start bg-[#0f0f1a] rounded-xl border border-white/[0.07] p-5 step-card">
+            <div class="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-purple-600 to-purple-700 flex items-center justify-center text-sm font-black shadow-lg shadow-purple-500/20 relative z-10">3</div>
+            <div>
+              <h3 class="font-semibold text-white mb-1 text-[15px]">Branch wherever you're curious</h3>
+              <p class="text-sm text-gray-500 leading-[1.7]">
+                Every concept has a "Learn More" button. Click it and the AI grows a new branch
+                one level deeper. Repeat as many times as you like. There is no final node.
+              </p>
+            </div>
+          </div>
+
+          <div class="flex gap-5 items-start bg-[#0f0f1a] rounded-xl border border-white/[0.07] p-5 step-card">
+            <div class="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-700 flex items-center justify-center text-sm font-black shadow-lg shadow-indigo-500/20 relative z-10">4</div>
+            <div>
+              <h3 class="font-semibold text-white mb-1 text-[15px]">Test, share, and let others grow on yours</h3>
+              <p class="text-sm text-gray-500 leading-[1.7]">
+                Run a knowledge check to stress-test what you've rooted. Share to the community
+                wall. Watch others branch off your work.
+              </p>
+            </div>
           </div>
         </div>
-
-        <div class="flex gap-5 items-start bg-[#13131f] rounded-2xl border border-white/6 p-5 card-glow">
-          <div class="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-violet-600 to-violet-700 flex items-center justify-center text-sm font-black shadow-lg shadow-violet-500/20">2</div>
-          <div>
-            <h3 class="font-bold text-white mb-1">Grow your first root</h3>
-            <p class="text-sm text-gray-500">
-              Hit Explore. The AI extracts the core concepts behind the story and maps them from
-              foundational to advanced. Your first branch emerges instantly.
-            </p>
-          </div>
-        </div>
-
-        <div class="flex gap-5 items-start bg-[#13131f] rounded-2xl border border-white/6 p-5 card-glow">
-          <div class="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-purple-600 to-purple-700 flex items-center justify-center text-sm font-black shadow-lg shadow-purple-500/20">3</div>
-          <div>
-            <h3 class="font-bold text-white mb-1">Branch wherever you're curious</h3>
-            <p class="text-sm text-gray-500">
-              Every concept has a "Learn More" button. Click it and the AI grows a new branch one
-              level deeper. Repeat as many times as you like. There is no final node.
-            </p>
-          </div>
-        </div>
-
-        <div class="flex gap-5 items-start bg-[#13131f] rounded-2xl border border-white/6 p-5 card-glow">
-          <div class="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-700 flex items-center justify-center text-sm font-black shadow-lg shadow-indigo-500/20">4</div>
-          <div>
-            <h3 class="font-bold text-white mb-1">Test, share, and let others grow on yours</h3>
-            <p class="text-sm text-gray-500">
-              Run a knowledge check to stress-test what you've rooted. Then share your root system
-              to the community wall. Watch others branch off your work.
-            </p>
-          </div>
-        </div>
-
       </div>
 
-      <!-- Live root visual: 2 cols, sticky -->
-      <div class="lg:col-span-2 lg:sticky lg:top-24 bg-[#13131f] rounded-2xl border border-white/6 p-5">
-        <p class="text-[10px] text-gray-600 uppercase tracking-wider font-semibold mb-4">Your root system grows with every question</p>
+      <!-- Live root visual: sticky -->
+      <div class="lg:col-span-2 lg:sticky lg:top-24 bg-[#0f0f1a] rounded-2xl border border-white/[0.07] overflow-hidden">
+        <div class="px-5 pt-4 pb-3 border-b border-white/5">
+          <p class="text-[10px] text-gray-600 uppercase tracking-widest font-semibold">Live root system</p>
+        </div>
 
-        <div class="font-mono text-[11px] space-y-0.5 mb-4">
-          <div class="flex items-center gap-2 px-2.5 py-2 bg-indigo-500/10 border border-indigo-500/15 rounded-lg mb-3">
-            <span>🌱</span>
+        <div class="px-5 pt-4 pb-2 font-mono text-[11px] space-y-0.5">
+          <div class="flex items-center gap-2 px-3 py-2 bg-indigo-500/8 border border-indigo-500/12 rounded-lg mb-3">
+            <span class="text-indigo-400 text-xs">⬡</span>
             <span class="text-indigo-300 text-[11px] font-medium truncate">AI breakthrough in protein folding</span>
           </div>
-          <div class="flex items-center gap-2 py-0.5">
-            <span class="text-indigo-400">⬡</span>
-            <span class="text-white font-bold">How does AlphaFold work?</span>
+          <div class="flex items-center gap-1.5 py-0.5 text-white font-semibold">
+            <span class="text-indigo-400/60">╴</span> How does AlphaFold work?
           </div>
-          <div class="pl-4 text-violet-300 py-0.5">├─ What is a protein?</div>
-          <div class="pl-8 text-indigo-300 py-0.5">├─ Amino acids</div>
-          <div class="pl-12 text-purple-300 py-0.5">└─ DNA encoding</div>
-          <div class="pl-4 text-violet-300 py-0.5">├─ Neural networks in biology</div>
-          <div class="pl-8 text-indigo-300 py-0.5">└─ Graph neural nets</div>
-          <div class="pl-4 text-violet-300 py-0.5">└─ Why shape = function?</div>
-          <div class="pl-8 text-indigo-300 py-0.5">└─ Enzyme model</div>
-          <div class="pl-12 flex items-center gap-1 text-purple-200 py-0.5 font-semibold">
+          <div class="pl-4 text-violet-300/80 py-0.5">├─ What is a protein?</div>
+          <div class="pl-8 text-indigo-300/70 py-0.5">├─ Amino acids</div>
+          <div class="pl-12 text-purple-300/60 py-0.5">└─ DNA encoding</div>
+          <div class="pl-4 text-violet-300/80 py-0.5">├─ Neural networks in biology</div>
+          <div class="pl-8 text-indigo-300/70 py-0.5">└─ Graph neural nets</div>
+          <div class="pl-4 text-violet-300/80 py-0.5">└─ Why shape = function?</div>
+          <div class="pl-8 text-indigo-300/70 py-0.5">└─ Enzyme model</div>
+          <div class="pl-12 flex items-center gap-1 text-purple-200/80 py-0.5 font-semibold">
             └─ Catalysis rates
             <span class="w-1.5 h-3.5 bg-indigo-400 animate-blink rounded-sm ml-1 inline-block"></span>
           </div>
         </div>
 
-        <div class="border-t border-white/5 pt-3">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="flex-1 bg-gray-800 rounded-full h-1.5 overflow-hidden">
+        <div class="px-5 pb-5 pt-3 border-t border-white/5 mt-2">
+          <div class="flex items-center gap-2 mb-3">
+            <div class="flex-1 bg-white/5 rounded-full h-1 overflow-hidden">
               <div class="h-full w-[65%] bg-gradient-to-r from-indigo-500 to-violet-500 rounded-full"></div>
             </div>
-            <span class="text-[10px] text-gray-500 whitespace-nowrap">8 nodes rooted</span>
+            <span class="text-[10px] text-gray-600 whitespace-nowrap">8 nodes rooted</span>
           </div>
-          <div class="flex flex-wrap gap-1.5 mt-3">
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-500/20">🧠 Check Knowledge</span>
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/20">⚡ Learn More</span>
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-300 border border-violet-500/20">🌍 Share Roots</span>
+          <div class="flex flex-wrap gap-1.5">
+            <span class="text-[10px] px-2.5 py-1 rounded-full bg-purple-500/10 text-purple-300/80 border border-purple-500/15">Check Knowledge</span>
+            <span class="text-[10px] px-2.5 py-1 rounded-full bg-indigo-500/10 text-indigo-300/80 border border-indigo-500/15">Learn More</span>
+            <span class="text-[10px] px-2.5 py-1 rounded-full bg-violet-500/10 text-violet-300/80 border border-violet-500/15">Share Roots</span>
           </div>
         </div>
       </div>
@@ -436,104 +463,92 @@
 
 <!-- COMMUNITY -->
 <section id="community" class="py-28 max-w-7xl mx-auto px-4 sm:px-6">
-  <div class="grid lg:grid-cols-2 gap-14 items-center">
+  <div class="grid lg:grid-cols-2 gap-16 items-center">
 
     <div>
-      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-violet-500/10 border border-violet-500/20 text-violet-400 text-xs font-medium mb-6">
-        Community Root Garden
-      </div>
-      <h2 class="text-4xl font-black tracking-tight mb-6">
+      <span class="eyebrow">Community</span>
+      <h2 class="text-4xl font-black tracking-tight mb-5 leading-[1.1]">
         Your roots become a<br><span class="gradient-text">shared foundation</span>
       </h2>
-      <p class="text-gray-400 leading-relaxed mb-4">
+      <p class="text-gray-500 leading-[1.8] mb-8 text-[15px]">
         In a forest, root systems connect underground. Trees share nutrients, support each other,
-        and grow stronger together. No root system exists in isolation.
+        and grow stronger together. On Mathemariza, share a session and others can explore your
+        entire branch tree, import it, and keep growing from exactly where you stopped.
       </p>
-      <p class="text-gray-400 leading-relaxed mb-8">
-        On Mathemariza, your learning roots work the same way. Share a session and others can
-        explore your entire branch tree, import it into their own journey, and keep growing from
-        exactly where you stopped.
-      </p>
-      <ul class="space-y-3 text-sm text-gray-400">
-        <li class="flex items-center gap-2.5">
-          <span class="w-5 h-5 rounded-full bg-indigo-500/20 flex items-center justify-center flex-shrink-0">
-            <svg class="w-3 h-3 text-indigo-400" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
-            </svg>
+      <ul class="space-y-3">
+        <li class="flex items-start gap-3 text-sm text-gray-400">
+          <span class="mt-0.5 w-4 h-4 rounded-full bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center flex-shrink-0">
+            <svg class="w-2.5 h-2.5 text-indigo-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
           </span>
           Follow learners and explore their public root systems
         </li>
-        <li class="flex items-center gap-2.5">
-          <span class="w-5 h-5 rounded-full bg-indigo-500/20 flex items-center justify-center flex-shrink-0">
-            <svg class="w-3 h-3 text-indigo-400" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
-            </svg>
+        <li class="flex items-start gap-3 text-sm text-gray-400">
+          <span class="mt-0.5 w-4 h-4 rounded-full bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center flex-shrink-0">
+            <svg class="w-2.5 h-2.5 text-indigo-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
           </span>
           Import any shared root and keep growing from that branch
         </li>
-        <li class="flex items-center gap-2.5">
-          <span class="w-5 h-5 rounded-full bg-indigo-500/20 flex items-center justify-center flex-shrink-0">
-            <svg class="w-3 h-3 text-indigo-400" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
-            </svg>
+        <li class="flex items-start gap-3 text-sm text-gray-400">
+          <span class="mt-0.5 w-4 h-4 rounded-full bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center flex-shrink-0">
+            <svg class="w-2.5 h-2.5 text-indigo-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
           </span>
           Upvotes, star ratings, and scores that reward depth
         </li>
-        <li class="flex items-center gap-2.5">
-          <span class="w-5 h-5 rounded-full bg-indigo-500/20 flex items-center justify-center flex-shrink-0">
-            <svg class="w-3 h-3 text-indigo-400" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
-            </svg>
+        <li class="flex items-start gap-3 text-sm text-gray-400">
+          <span class="mt-0.5 w-4 h-4 rounded-full bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center flex-shrink-0">
+            <svg class="w-2.5 h-2.5 text-indigo-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
           </span>
           Live wall updates, comments, and replies in real time
         </li>
       </ul>
     </div>
 
-    <!-- Community visual: fake wall cards -->
-    <div class="space-y-4">
-      <div class="bg-[#13131f] rounded-2xl border border-white/6 p-5">
-        <div class="flex items-center gap-2.5 mb-3">
-          <div class="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 flex items-center justify-center text-xs font-bold flex-shrink-0">A</div>
+    <!-- Community wall preview -->
+    <div class="space-y-3">
+      <div class="bg-[#0f0f1a] rounded-2xl border border-white/[0.07] p-5 hover:border-white/12 transition-colors duration-200">
+        <div class="flex items-center gap-3 mb-3">
+          <div class="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 flex items-center justify-center text-xs font-bold flex-shrink-0 shadow-md shadow-indigo-500/20">A</div>
           <div class="flex-1 min-w-0">
-            <p class="text-xs font-semibold text-white">Alex M.</p>
-            <p class="text-[10px] text-gray-600">★★★☆☆ &nbsp;·&nbsp; 3 min ago</p>
+            <p class="text-xs font-semibold text-gray-200">Alex M.</p>
+            <p class="text-[10px] text-gray-600">★★★☆☆ · 3 min ago</p>
           </div>
-          <span class="text-[10px] px-2 py-0.5 rounded-full bg-green-500/10 text-green-400 border border-green-500/15 flex-shrink-0">🌍 Public</span>
+          <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/15 flex-shrink-0 font-medium">Public</span>
         </div>
-        <p class="text-xs font-semibold text-gray-200 mb-1">🌱 How CRISPR actually edits genes</p>
-        <p class="text-[11px] text-gray-600 mb-3">Root system depth: 4 branches &nbsp;·&nbsp; 14 concepts</p>
-        <div class="pl-3 border-l border-violet-500/30 space-y-0.5 font-mono text-[10px] text-gray-600 mb-3">
-          <div class="text-violet-400">├─ What is a gene?</div>
-          <div class="pl-4 text-indigo-400">├─ DNA double helix</div>
-          <div class="pl-8 text-purple-400">└─ Base pair bonding</div>
-          <div class="text-violet-400">└─ How cas9 cuts DNA</div>
+        <p class="text-xs font-semibold text-gray-200 mb-1">How CRISPR actually edits genes</p>
+        <p class="text-[11px] text-gray-600 mb-3">4 branches · 14 concepts</p>
+        <div class="pl-3 border-l border-violet-500/25 space-y-0.5 font-mono text-[10px] mb-4">
+          <div class="text-violet-400/80">├─ What is a gene?</div>
+          <div class="pl-4 text-indigo-400/70">├─ DNA double helix</div>
+          <div class="pl-8 text-purple-400/60">└─ Base pair bonding</div>
+          <div class="text-violet-400/80">└─ How Cas9 cuts DNA</div>
         </div>
-        <div class="flex items-center gap-3 pt-3 border-t border-white/5 text-xs text-gray-600">
-          <span>👍 12</span><span>👎 0</span>
-          <span class="ml-auto text-indigo-400 cursor-pointer text-[11px]">Explore roots</span>
+        <div class="flex items-center gap-3 pt-3 border-t border-white/5 text-[11px] text-gray-600">
+          <span class="hover:text-gray-400 cursor-pointer transition-colors">👍 12</span>
+          <span class="hover:text-gray-400 cursor-pointer transition-colors">👎 0</span>
+          <span class="ml-auto text-indigo-400 hover:text-indigo-300 cursor-pointer transition-colors font-medium">Explore roots</span>
         </div>
       </div>
 
-      <div class="bg-[#13131f] rounded-2xl border border-white/6 p-5">
-        <div class="flex items-center gap-2.5 mb-3">
-          <div class="w-8 h-8 rounded-full bg-gradient-to-br from-violet-400 to-purple-500 flex items-center justify-center text-xs font-bold flex-shrink-0">M</div>
+      <div class="bg-[#0f0f1a] rounded-2xl border border-white/[0.07] p-5 hover:border-white/12 transition-colors duration-200">
+        <div class="flex items-center gap-3 mb-3">
+          <div class="w-8 h-8 rounded-full bg-gradient-to-br from-violet-400 to-purple-500 flex items-center justify-center text-xs font-bold flex-shrink-0 shadow-md shadow-violet-500/20">M</div>
           <div class="flex-1 min-w-0">
-            <p class="text-xs font-semibold text-white">Maya K.</p>
-            <p class="text-[10px] text-gray-600">★★☆☆☆ &nbsp;·&nbsp; 8 min ago</p>
+            <p class="text-xs font-semibold text-gray-200">Maya K.</p>
+            <p class="text-[10px] text-gray-600">★★☆☆☆ · 8 min ago</p>
           </div>
-          <span class="text-[10px] px-2 py-0.5 rounded-full bg-green-500/10 text-green-400 border border-green-500/15 flex-shrink-0">🌍 Public</span>
+          <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/15 flex-shrink-0 font-medium">Public</span>
         </div>
-        <p class="text-xs font-semibold text-gray-200 mb-1">🌱 Why central banks raise interest rates</p>
-        <p class="text-[11px] text-gray-600 mb-3">Root system depth: 2 branches &nbsp;·&nbsp; 6 concepts</p>
-        <div class="pl-3 border-l border-violet-500/30 space-y-0.5 font-mono text-[10px] text-gray-600 mb-3">
-          <div class="text-violet-400">├─ What is inflation?</div>
-          <div class="pl-4 text-indigo-400">└─ Money supply mechanics</div>
-          <div class="text-violet-400">└─ How rate hikes slow spending</div>
+        <p class="text-xs font-semibold text-gray-200 mb-1">Why central banks raise interest rates</p>
+        <p class="text-[11px] text-gray-600 mb-3">2 branches · 6 concepts</p>
+        <div class="pl-3 border-l border-violet-500/25 space-y-0.5 font-mono text-[10px] mb-4">
+          <div class="text-violet-400/80">├─ What is inflation?</div>
+          <div class="pl-4 text-indigo-400/70">└─ Money supply mechanics</div>
+          <div class="text-violet-400/80">└─ How rate hikes slow spending</div>
         </div>
-        <div class="flex items-center gap-3 pt-3 border-t border-white/5 text-xs text-gray-600">
-          <span>👍 7</span><span>👎 0</span>
-          <span class="ml-auto text-indigo-400 cursor-pointer text-[11px]">Explore roots</span>
+        <div class="flex items-center gap-3 pt-3 border-t border-white/5 text-[11px] text-gray-600">
+          <span class="hover:text-gray-400 cursor-pointer transition-colors">👍 7</span>
+          <span class="hover:text-gray-400 cursor-pointer transition-colors">👎 0</span>
+          <span class="ml-auto text-indigo-400 hover:text-indigo-300 cursor-pointer transition-colors font-medium">Explore roots</span>
         </div>
       </div>
     </div>
@@ -544,41 +559,44 @@
 <!-- FINAL CTA -->
 <section class="py-32 relative overflow-hidden">
   <div class="absolute inset-0 pointer-events-none">
-    <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-indigo-600/10 rounded-full blur-3xl"></div>
+    <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[700px] h-[700px] bg-indigo-600/8 rounded-full blur-3xl"></div>
+    <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[400px] h-[400px] bg-violet-600/8 rounded-full blur-2xl"></div>
   </div>
-  <div class="relative max-w-3xl mx-auto px-4 text-center">
-    <div class="text-5xl mb-6">🌿</div>
-    <h2 class="text-4xl sm:text-5xl font-black tracking-tight mb-6">
+  <!-- Top border glow -->
+  <div class="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-indigo-500/30 to-transparent"></div>
+
+  <div class="relative max-w-2xl mx-auto px-4 text-center">
+    <span class="eyebrow">Get started</span>
+    <h2 class="text-4xl sm:text-5xl font-black tracking-tight mb-5 leading-[1.1]">
       Your roots can grow<br><span class="gradient-text">as deep as you allow.</span>
     </h2>
-    <p class="text-gray-400 text-lg mb-10 leading-relaxed">
-      Real tree roots find their own path, through rock, through soil, as far as they need to go.
-      Plant your first question in Mathemariza and see where your roots take you.
+    <p class="text-gray-500 text-base mb-10 leading-[1.8] max-w-lg mx-auto">
+      Plant your first question and see where your roots take you.
+      No credit card. No imposed structure. Just curiosity.
     </p>
     {% if is_logged_in %}
     <a href="/app"
-       class="inline-flex items-center gap-2 px-10 py-4 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600
-              font-bold text-white text-lg shadow-2xl shadow-indigo-500/30
-              hover:shadow-indigo-500/50 hover:scale-105 transition-all duration-200">
+       class="inline-flex items-center gap-2 px-9 py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600
+              font-semibold text-white text-sm shadow-2xl shadow-indigo-500/30
+              hover:from-indigo-500 hover:to-violet-500 hover:shadow-indigo-500/40 hover:scale-[1.02] transition-all duration-200">
       Open Mathemariza
     </a>
     {% else %}
     <a href="/register"
-       class="inline-flex items-center gap-2 px-10 py-4 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600
-              font-bold text-white text-lg shadow-2xl shadow-indigo-500/30
-              hover:shadow-indigo-500/50 hover:scale-105 transition-all duration-200">
+       class="inline-flex items-center gap-2 px-9 py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600
+              font-semibold text-white text-sm shadow-2xl shadow-indigo-500/30
+              hover:from-indigo-500 hover:to-violet-500 hover:shadow-indigo-500/40 hover:scale-[1.02] transition-all duration-200">
       Plant Your First Root
     </a>
-    <p class="mt-4 text-sm text-gray-600">No credit card. No limits. Just curiosity.</p>
     {% endif %}
   </div>
 </section>
 
 <!-- FOOTER -->
-<footer class="border-t border-white/5 py-10">
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-gray-600">
-    <div class="flex items-center gap-2">
-      <div class="w-6 h-6 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center">
+<footer class="border-t border-white/5 py-10 bg-[#080810]">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-5 text-sm text-gray-600">
+    <div class="flex items-center gap-2.5">
+      <div class="w-6 h-6 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-sm shadow-indigo-500/20">
         <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
                 d="M12 8.5C11.5 5.5 9 3 6.5 3C4 3 2.5 5 2.5 7.5C2.5 12 7.5 17 12 21"/>
@@ -587,15 +605,56 @@
         </svg>
       </div>
       <span class="font-semibold text-gray-500">Mathemariza</span>
-      <span class="text-gray-700">· Learning Roots</span>
+      <span class="text-gray-700 text-xs font-medium">| Learning Roots</span>
+      <span class="text-gray-700 text-xs">© 2026</span>
     </div>
-    <div class="flex items-center gap-6">
-      <a href="/login"    class="hover:text-gray-400 transition-colors">Sign In</a>
-      <a href="/register" class="hover:text-gray-400 transition-colors">Register</a>
-      <a href="/app"      class="hover:text-gray-400 transition-colors">App</a>
+    <div class="flex items-center gap-6 text-xs">
+      <a href="/login"    class="hover:text-gray-300 transition-colors">Sign In</a>
+      <a href="/register" class="hover:text-gray-300 transition-colors">Register</a>
+      <a href="#features" class="hover:text-gray-300 transition-colors">Features</a>
+      <a href="#community" class="hover:text-gray-300 transition-colors">Community</a>
     </div>
   </div>
 </footer>
+
+<script>
+(function () {
+  /* Active nav highlight via IntersectionObserver */
+  var sections = ['features', 'how-it-works', 'community'];
+  var navLinks = {};
+  sections.forEach(function(id) {
+    var el = document.querySelector('[data-nav="' + id + '"]');
+    if (el) navLinks[id] = el;
+  });
+
+  var current = '';
+  var observer = new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) {
+      if (entry.isIntersecting) {
+        var id = entry.target.id;
+        if (id !== current) {
+          if (navLinks[current]) navLinks[current].classList.remove('active');
+          current = id;
+          if (navLinks[current]) navLinks[current].classList.add('active');
+        }
+      }
+    });
+  }, { rootMargin: '-30% 0px -60% 0px', threshold: 0 });
+
+  sections.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) observer.observe(el);
+  });
+
+  /* Clear active state when scrolled back to hero */
+  window.addEventListener('scroll', function() {
+    if (window.scrollY < 200 && current) {
+      if (navLinks[current]) navLinks[current].classList.remove('active');
+      current = '';
+    }
+  }, { passive: true });
+})();
+</script>
 
 <script>
 (function () {
@@ -618,7 +677,7 @@
   function resize() {
     var m = getMargin();
     H = window.innerHeight - 64;
-    if (m < 52 || H < 100) { canvas.style.display = 'none'; W = 0; return; }
+    if (m < 52 || H < 100 || window.innerWidth < 1280) { canvas.style.display = 'none'; W = 0; return; }
     W = m - 8;
     canvas.width  = W;
     canvas.height = H;

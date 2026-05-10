@@ -31,7 +31,9 @@
       "Bash(python *)",
       "Bash(Get-Content \"D:\\\\code-setup\\\\ai-agent\\\\docs\\\\ARCHITECTURE.md\")",
       "Bash(Measure-Object -Line)",
-      "PowerShell(Get-Content *)"
+      "PowerShell(Get-Content *)",
+      "Read(//c/Users/MSI/.claude/**)",
+      "Read(//c/Users/MSI/AppData/Roaming/Claude/**)"
     ]
   }
 }
