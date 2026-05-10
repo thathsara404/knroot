@@ -2,7 +2,7 @@
 {# Variables: articles (list), category (str: 'ai'|'programming'|'political'|'biology'|'economy'|'health') #}
 <div class="flex flex-col h-full">
 
-  <div class="flex border-b border-gray-200 bg-white sticky top-0 z-10 flex-shrink-0">
+  <div class="flex border-b border-gray-200 bg-white sticky top-0 z-10 flex-shrink-0 overflow-x-auto">
     {% for cat, label in [('ai', 'AI'), ('programming', 'Dev'), ('political', 'World'), ('biology', 'Bio'), ('economy', 'Econ'), ('health', 'Health')] %}
     <button
       type="button"
@@ -43,8 +43,8 @@
 
     {% for article in articles %}
       <div
-        class="bg-white rounded-xl border p-3 shadow-sm hover:shadow-md transition-shadow
-               {% if article.get('_curated') %}border-amber-300{% else %}border-gray-200{% endif %}"
+        class="bg-white rounded-xl border p-3 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all
+               {% if article.get('_curated') %}border-amber-400 ring-1 ring-amber-200{% else %}border-gray-200{% endif %}"
         x-data="newsCardState('{{ article.get('id', '') | e }}')"
         data-article-id="{{ article.get('id', '') | e }}"
         data-article-title="{{ article.get('title', '') | e }}"
@@ -65,9 +65,11 @@
               {{ article.get('source', '') }}
             </span>
           </div>
-          <span class="text-xs text-gray-400 flex-shrink-0 ml-1">
-            {{ article.get('published', '') | pub_date }}
-          </span>
+          <time
+            class="text-xs text-gray-400 flex-shrink-0 ml-1"
+            datetime="{{ article.get('published', '') }}"
+            data-knr-time
+          >{{ article.get('published', '') | pub_date }}</time>
         </div>
 
         {# Title as link to original article #}
@@ -113,7 +115,7 @@
             @click="exploreLoading=true; discussArticle($root.dataset, (ok) => { exploreLoading=false; if(ok) markExplored(); })"
             class="flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg
                    bg-indigo-50 text-indigo-600 border border-indigo-200
-                   hover:bg-indigo-100 disabled:opacity-50 font-medium transition-colors"
+                   hover:bg-indigo-100 hover:border-indigo-300 disabled:opacity-50 font-medium transition-colors"
           >
             <svg x-show="alreadyExplored && !exploreLoading" class="w-3 h-3 text-green-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>

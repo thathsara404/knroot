@@ -3,7 +3,7 @@
 {% block title %}Dashboard — Knowledge Root{% endblock %}
 
 {% block nav %}
-<nav class="border-b border-gray-200 bg-white">
+<nav class="border-b border-gray-200 bg-white shadow-sm">
   <div class="flex items-center justify-between px-4 py-3" x-data>
     <div class="flex items-center gap-3">
       <button
@@ -16,7 +16,7 @@
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
         </svg>
       </button>
-      <span class="text-lg font-bold text-indigo-600">Knowledge Root</span>
+      <span class="text-lg font-bold bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">Knowledge Root</span>
     </div>
     <form hx-post="/auth/logout" hx-headers='{"HX-Request": "true"}'>
       <button
@@ -43,10 +43,21 @@
   @session-activated.window="setActiveFromEvent($event)"
 >
 
-  <!-- LEFT SIDEBAR -->
+  <!-- Mobile sidebar backdrop — closes sidebar on tap outside -->
+  <div
+    x-show="sidebarOpen"
+    x-cloak
+    @click="sidebarOpen = false"
+    class="fixed inset-0 bg-black/40 z-30 md:hidden"
+    style="top:57px"
+  ></div>
+
+  <!-- LEFT SIDEBAR — fixed overlay on mobile, inline on md+ -->
   <aside
     id="sidebar"
-    class="flex-shrink-0 bg-gray-900 text-white flex flex-col overflow-hidden"
+    class="flex-shrink-0 bg-gray-900 text-white flex flex-col overflow-hidden
+           fixed top-[57px] bottom-0 left-0 z-40
+           md:relative md:top-auto md:bottom-auto md:z-auto"
     :style="sidebarOpen ? `width:${sidebarWidth}px;min-width:180px` : 'width:0px'"
     style="transition: width 0.2s"
   >
@@ -145,10 +156,10 @@
     </div>
   </aside>
 
-  <!-- LEFT RESIZE HANDLE -->
+  <!-- LEFT RESIZE HANDLE — desktop only -->
   <div
     x-show="sidebarOpen"
-    class="w-1 flex-shrink-0 bg-gray-700 hover:bg-indigo-500 cursor-col-resize transition-colors relative group"
+    class="hidden md:block w-1 flex-shrink-0 bg-gray-700 hover:bg-indigo-500 cursor-col-resize transition-colors relative group"
     style="z-index:10"
     @mousedown.prevent="startResize($event, 'left')"
   >
@@ -163,7 +174,7 @@
       x-show="activeTab === 'wall' && newWallPosts > 0"
       x-cloak
       @click="newWallPosts = 0; htmx.ajax('GET', '/wall/public/partial', {target: '#chat-messages', swap: 'innerHTML'})"
-      class="flex items-center justify-center gap-2 py-2 px-4 bg-indigo-600 text-white text-xs font-semibold cursor-pointer hover:bg-indigo-700 transition-colors flex-shrink-0"
+      class="flex items-center justify-center gap-2 py-2 px-4 bg-gradient-to-r from-indigo-600 to-violet-600 text-white text-xs font-semibold cursor-pointer hover:from-indigo-700 hover:to-violet-700 transition-all flex-shrink-0"
     >
       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -194,9 +205,9 @@
         @click="generateQuiz()"
         :disabled="quizLoading || chatLoading || contentBusy || (quizViewState && !quizViewState.submitted)"
         :title="quizViewState && !quizViewState.submitted ? 'Submit the quiz first' : ''"
-        class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg
+        class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg
                bg-purple-50 text-purple-700 border border-purple-200
-               hover:bg-purple-100 disabled:opacity-50 transition-colors"
+               hover:bg-purple-100 hover:border-purple-300 disabled:opacity-50 transition-colors shadow-sm"
       >
         <span x-show="!quizLoading">
           <span x-show="!quizViewState || !quizViewState.submitted">🧠 Check Knowledge</span>
@@ -229,8 +240,8 @@
           required
           rows="2"
           placeholder="Ask anything — science, history, technology, economics…"
-          class="flex-1 resize-none rounded-xl border border-gray-300 px-4 py-2.5 text-sm
-                 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+          class="flex-1 resize-none rounded-xl border border-gray-200 px-4 py-2.5 text-sm
+                 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent shadow-sm"
           @keydown.enter.prevent="if(!$event.shiftKey) $el.closest('form').requestSubmit()"
         ></textarea>
         <button
@@ -251,18 +262,18 @@
     </div>
   </main>
 
-  <!-- RIGHT RESIZE HANDLE -->
+  <!-- RIGHT RESIZE HANDLE — desktop only -->
   <div
-    class="w-1 flex-shrink-0 bg-gray-200 hover:bg-indigo-400 cursor-col-resize transition-colors relative group"
+    class="hidden md:block w-1 flex-shrink-0 bg-gray-200 hover:bg-indigo-400 cursor-col-resize transition-colors relative group"
     style="z-index:10"
     @mousedown.prevent="startResize($event, 'right')"
   >
     <div class="absolute inset-y-0 -left-1 -right-1"></div>
   </div>
 
-  <!-- RIGHT PANE: News / Knowledge Tree -->
+  <!-- RIGHT PANE: News / Knowledge Tree — hidden on mobile, inline on md+ -->
   <aside
-    class="flex-shrink-0 border-l border-gray-200 bg-gray-50 overflow-hidden flex flex-col relative"
+    class="hidden md:flex flex-shrink-0 border-l border-gray-200 bg-gray-50 overflow-hidden flex-col relative"
     :style="`width:${rightPanelWidth}px;min-width:200px`"
   >
     <!-- Loading overlay shown while news panel is fetching -->
@@ -302,39 +313,84 @@
   <div
     x-show="shareModal.open"
     x-cloak
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
     @click.self="shareModal.open = false"
     @keydown.escape.window="shareModal.open = false"
   >
-    <div class="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md mx-4">
-      <h2 class="text-base font-semibold text-gray-800 mb-4">Share to Wall</h2>
-      <div class="space-y-3">
+    <div class="bg-white rounded-2xl shadow-2xl ring-1 ring-black/10 w-full max-w-md mx-4 overflow-hidden">
+      <!-- Modal header -->
+      <div class="px-6 pt-5 pb-4 border-b border-gray-100">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center flex-shrink-0">
+            <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
+            </svg>
+          </div>
+          <div>
+            <h2 class="text-sm font-semibold text-gray-900 leading-snug">Share to Wall</h2>
+            <p class="text-xs text-gray-400">Publish your knowledge root to the community</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="px-6 py-4 space-y-3">
+        <!-- What sharing means -->
+        <div class="rounded-xl bg-indigo-50 border border-indigo-100 px-3.5 py-3 space-y-2">
+          <p class="text-xs font-semibold text-indigo-800">What happens when you share?</p>
+          <ul class="space-y-1.5">
+            <li class="flex items-start gap-2 text-xs text-indigo-700">
+              <svg class="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0zM2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+              </svg>
+              Others can <span class="font-medium">preview</span> your full knowledge tree
+            </li>
+            <li class="flex items-start gap-2 text-xs text-indigo-700">
+              <svg class="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+              </svg>
+              They can <span class="font-medium">import</span> it into their own Root and explore further
+            </li>
+            <li class="flex items-start gap-2 text-xs text-indigo-700">
+              <svg class="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
+              </svg>
+              They can <span class="font-medium">improve and share back</span> with the community
+            </li>
+          </ul>
+        </div>
+
+        <!-- Visibility -->
         <div>
           <label class="block text-xs font-medium text-gray-600 mb-1">Visibility</label>
           <select x-model="shareModal.visibility"
-                  class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm
-                         focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500">
+                  class="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm
+                         focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white shadow-sm">
             <option value="public">🌍 Public — visible to everyone</option>
             <option value="friends">🔒 Friends — visible to followers only</option>
           </select>
         </div>
+
+        <!-- Description -->
         <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1">Description (optional)</label>
-          <textarea x-model="shareModal.description" rows="3"
+          <label class="block text-xs font-medium text-gray-600 mb-1">Description <span class="text-gray-400 font-normal">(optional)</span></label>
+          <textarea x-model="shareModal.description" rows="2"
                     placeholder="What's this knowledge root about?"
-                    class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none
-                           focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
+                    class="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm resize-none shadow-sm
+                           focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
         </div>
       </div>
-      <div class="flex gap-2 mt-5">
+
+      <!-- Actions -->
+      <div class="px-6 pb-5 flex gap-2">
         <button @click="submitShare()"
                 :disabled="shareModal.loading"
-                class="flex-1 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 disabled:opacity-50">
-          <span x-show="!shareModal.loading">Share</span>
+                class="flex-1 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 text-white rounded-xl text-sm font-semibold hover:from-indigo-700 hover:to-violet-700 disabled:opacity-50 shadow-sm transition-all">
+          <span x-show="!shareModal.loading">Share to Wall</span>
           <span x-show="shareModal.loading">Sharing...</span>
         </button>
         <button @click="shareModal.open = false"
-                class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-xl text-sm">Cancel</button>
+                class="px-4 py-2.5 text-gray-600 hover:bg-gray-100 rounded-xl text-sm font-medium transition-colors">Cancel</button>
       </div>
     </div>
   </div>

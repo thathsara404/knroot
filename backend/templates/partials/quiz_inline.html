@@ -66,11 +66,11 @@
   {# Questions #}
   <div x-show="!loading" class="space-y-4">
     <template x-for="(q, qi) in questions" :key="q.id">
-      <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
 
         <div class="px-4 pt-4 pb-3">
           <div class="flex items-start gap-2 mb-3">
-            <span class="flex-shrink-0 w-5 h-5 rounded-full bg-gray-100 text-gray-500 text-xs flex items-center justify-center font-semibold"
+            <span class="flex-shrink-0 w-5 h-5 rounded-full bg-indigo-100 text-indigo-700 text-xs flex items-center justify-center font-semibold"
                   x-text="qi + 1"></span>
             <p class="text-xs font-medium text-gray-800 leading-relaxed" x-text="q.text"></p>
           </div>
@@ -180,8 +180,8 @@
       x-show="!submitted"
       @click="submitQuiz()"
       :disabled="Object.keys(answers).length === 0"
-      class="px-5 py-2 bg-indigo-600 text-white rounded-xl text-xs font-medium
-             hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+      class="px-5 py-2 bg-indigo-600 text-white rounded-xl text-xs font-semibold
+             hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
     >Submit Quiz</button>
     <button
       x-show="submitted"

@@ -614,8 +614,13 @@ window.deleteSession = function (sessionId, childCount) {
   const extra = childCount > 0
     ? ` and its ${childCount} sub-thread${childCount === 1 ? '' : 's'}`
     : '';
-  if (!window.confirm(`Delete this session${extra}? This cannot be undone.`)) return;
-
+  window.KnrConfirm({
+    title: 'Delete session?',
+    message: `This will permanently remove the session${extra}. This cannot be undone.`,
+    confirmText: 'Delete',
+    danger: true,
+  }).then(function (ok) {
+    if (!ok) return;
   fetch(`/sessions/${sessionId}`, { method: 'DELETE' })
     .then((r) => {
       if (!r.ok) throw new Error('Delete failed');
@@ -644,6 +649,7 @@ window.deleteSession = function (sessionId, childCount) {
       Toast.success('Session deleted');
     })
     .catch(() => Toast.error('Could not delete session'));
+  });
 };
 
 // Generate a full-session quiz and load it inline in the chat pane.
@@ -733,8 +739,13 @@ window.generateFollowupQuiz = function (attemptId, parentSessionId, onLoading, o
 
 // Regenerate a learn_more or quiz sub-thread with a fresh LLM response.
 window.regenerateSession = function (sessionId, sessionType) {
-  if (!window.confirm('Regenerate this sub-thread? The current response will be replaced.')) return;
-
+  window.KnrConfirm({
+    title: 'Regenerate response?',
+    message: 'The current response will be permanently replaced with a fresh one.',
+    confirmText: 'Regenerate',
+    danger: false,
+  }).then(function (ok) {
+    if (!ok) return;
   Toast.info('Regenerating…');
   fetch(`/sessions/${sessionId}/regenerate`, { method: 'POST' })
     .then((r) => {
@@ -759,6 +770,7 @@ window.regenerateSession = function (sessionId, sessionType) {
       Toast.success('Sub-thread regenerated');
     })
     .catch((err) => Toast.error(typeof err === 'string' ? err : 'Could not regenerate'));
+  });
 };
 
 // =============================================================================
@@ -969,6 +981,19 @@ window.wallImport = function (shareId, component) {
       Toast.error(err.message || 'Could not import');
     })
     .finally(function () { component.importLoading = false; });
+};
+
+// Show a confirmation dialog then import if user confirms.
+window.wallImportWithConfirm = function (shareId, component) {
+  window.KnrConfirm({
+    title: 'Import to your Root?',
+    message: 'This copies the entire knowledge tree into your Root section. You can then explore, expand, and share it with the community.',
+    confirmText: 'Import',
+    danger: false,
+  }).then(function (ok) {
+    if (!ok) return;
+    window.wallImport(shareId, component);
+  });
 };
 
 // =============================================================================

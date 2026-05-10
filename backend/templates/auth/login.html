@@ -3,7 +3,7 @@
 {% block title %}Sign In — Knowledge Root{% endblock %}
 
 {% block content %}
-<div class="flex min-h-screen items-center justify-center px-4">
+<div class="flex min-h-screen items-center justify-center px-4 py-12 bg-gradient-to-br from-slate-50 via-white to-indigo-50">
   <div class="w-full max-w-sm space-y-6">
 
     <div class="text-center">
@@ -18,7 +18,7 @@
     <form
       hx-post="/auth/login"
       hx-on::after-request="handleAuthResponse(event, 'login-error')"
-      class="space-y-4 rounded-xl bg-white p-8 shadow-sm border border-gray-100"
+      class="space-y-4 rounded-2xl bg-white p-8 shadow-lg border border-gray-100/80 ring-1 ring-black/5"
       x-data="{ loading: false, showPassword: false }"
       @htmx:before-request.window="loading = true"
       @htmx:after-request.window="loading = false"

@@ -5,10 +5,10 @@
   x-data="{ open: true }"
   x-show="open"
   x-cloak
-  class="fixed inset-0 z-50 flex flex-col bg-black/60"
+  class="fixed inset-0 z-50 flex flex-col bg-black/70 backdrop-blur-sm"
   @keydown.escape.window="open = false; document.getElementById('share-preview-portal').innerHTML = ''"
 >
-  <div class="flex flex-col bg-white h-full max-h-screen overflow-hidden shadow-2xl mx-4 my-4 rounded-2xl md:mx-8 md:my-6">
+  <div class="flex flex-col bg-white h-full max-h-screen overflow-hidden shadow-2xl ring-1 ring-black/10 mx-4 my-4 rounded-2xl md:mx-8 md:my-6">
 
     <!-- Header -->
     <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200 flex-shrink-0">

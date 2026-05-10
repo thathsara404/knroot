@@ -878,6 +878,13 @@ def get_session_preview_content(share_session_id: str, session_id: str) -> dict[
         }
 
     # Regular / learn_more / news_discussion: return messages
+    # For news_discussion: topic column holds the article URL, title holds the article headline
+    article_link = ""
+    article_title = ""
+    if session_type == "news_discussion":
+        article_link = session.get("topic") or ""
+        article_title = session.get("title") or ""
+
     messages = query(
         """
         SELECT role, content, created_at
@@ -891,6 +898,8 @@ def get_session_preview_content(share_session_id: str, session_id: str) -> dict[
         "type": "messages",
         "title": session.get("title") or session.get("topic") or "Session",
         "session_type": session_type,
+        "article_link": article_link,
+        "article_title": article_title,
         "messages": [
             {
                 "role": m["role"],
