@@ -2582,3 +2582,166 @@ The news panel template (`news_panel.html`) shows a gold star SVG icon before th
 | After Explore clicked | ✓ Loaded badge | ✓ Loaded badge |
 
 **File changed:** `backend/templates/partials/quiz_inline.html` only.
+
+---
+
+## Phase 17 — UI Polish, Timezone Fix & Panel Toggle System
+
+**Branch:** `feature/auth` (bundled with auth work)
+
+**Goal:** Fix timezone rendering in news timestamps, replace native browser dialogs with a custom confirm component, and add a panel toggle system with full mobile-responsive layout.
+
+---
+
+### 17.1 Custom Confirm Dialog (`confirm.js`)
+
+**Motivation:** `window.confirm()` is blocked in some browser environments and is visually inconsistent with the app's design system.
+
+**Implementation:**
+- Created `backend/static/confirm.js` — self-contained IIFE, exposes `window.KnrConfirm(message)` returning `Promise<boolean>`.
+- Injects a full-screen overlay with a styled modal; resolves `true` on Confirm, `false` on Cancel or overlay-click; removes itself from the DOM after resolution.
+- Registered in `base.html` before `app.js` so all Alpine/HTMX event handlers can `await KnrConfirm(...)`.
+
+**Files changed:** `backend/static/confirm.js` (new), `backend/templates/base.html`, `backend/static/app.js` (callers updated).
+
+---
+
+### 17.2 Timezone-Aware Timestamp Rendering (`time.js`)
+
+**Problem:** The server-side `pub_date` Jinja filter produced UTC date labels. Users in UTC+N timezones (e.g., IST UTC+5:30) saw yesterday's date on articles that were actually published today in their local time.
+
+**Root cause:** `datetime.now(timezone.utc)` in the filter compared against the article's UTC publish time, but rendered the UTC calendar date — not the user's local date.
+
+**Solution (industry standard):** Store UTC (already done). Ship `<time datetime="UTC_ISO" data-knr-time>` elements with server-rendered fallback text. A new `time.js` module runs in the browser and replaces text content using `new Date(isoStr)`, which the browser converts to local timezone automatically.
+
+**Implementation:**
+- Created `backend/static/time.js` — runs on `DOMContentLoaded`, `htmx:afterSwap`, and every 60 seconds via `setInterval`.
+- Updated `news_panel.html`, `topic_news_panel.html`, and `share_card.html` to emit `<time data-knr-time>` elements.
+- Server-rendered fallback (`pub_date` filter output) remains as text for no-JS environments.
+
+**Files changed:** `backend/static/time.js` (new), `backend/templates/base.html`, `backend/templates/partials/news_panel.html`, `backend/templates/partials/topic_news_panel.html`, `backend/templates/partials/share_card.html`.
+
+---
+
+### 17.3 Panel Toggle System
+
+**Motivation:** Users wanted to hide individual panels (Chat, News, Public Wall, My Wall, Profile pane, Score pane) to focus on a single column, with the remaining panel expanding to fill the freed space.
+
+**Implementation:**
+
+Six boolean state vars added to `appState()` in `app.js`:
+
+```javascript
+showChat: true, showNews: true,
+showWallPublic: true, showWallPrivate: true,
+showProfileMain: true, showProfileScore: true,
+```
+
+No `localStorage` persistence — state always resets to "both visible" on page refresh. This keeps the mental model simple: the app always opens in its full default layout.
+
+Two computed methods (`centerPanelVisible()`, `rightPanelVisible()`) derive visibility from the active tab and the relevant boolean pair. `togglePanel(panel)` flips a named boolean.
+
+**Sub-toggle UI:** A row of two toggle buttons above the bottom nav shows context-specific labels (Chat/News for Root, Public/My Wall for Wall, Profile/Score for Profile). Buttons are indigo when the panel is active, gray when hidden.
+
+**Width fill:** The right `<aside>` `:style` binding switches between `width:${rightPanelWidth}px` (both panels visible) and `flex:1 1 auto` (center panel hidden) so no dead space appears.
+
+**Files changed:** `backend/static/app.js`, `backend/templates/app/index.html`.
+
+---
+
+### 17.4 Mobile-Responsive Layout
+
+**Changes:**
+
+| Area | Before | After |
+|---|---|---|
+| Content wrapper | implicit `flex-row` | `flex flex-col md:flex-row` |
+| Right `<aside>` height | `md:flex` (hidden on mobile) | always visible; `h-64 md:h-auto` |
+| Resize handle | visible on all widths | `hidden md:block` |
+| Bottom nav | `flex` (clips narrow) | `flex flex-wrap` + `min-w-[80px]` per button |
+
+On mobile (< 768 px), the three panels stack vertically: left sidebar (hamburger toggle) → center chat/content → right news/secondary panel as a fixed-height 256 px strip at the bottom. The drag-to-resize handle is hidden on mobile.
+
+The bottom nav Profile button previously disappeared when the sidebar was resized narrower than its content. `flex-wrap` with a `min-w-[80px]` floor allows buttons to wrap to a second row instead of overflowing.
+
+**Files changed:** `backend/templates/app/index.html`, `backend/static/app.js` (isMobile state + resize listener).
+
+---
+
+## Phase 18 — Scoring System Overhaul & Share Score Events
+
+**Branch:** `feature/auth`
+
+---
+
+### 18.1 Mobile Panel Height Fix
+
+**Problem:** On small phones (~667 px viewport), the right panel's `h-64` (256 px) left only ~248 px for the scrollable chat message area once the input bar and toolbar were subtracted.
+
+**Fix:** Reduced mobile right panel height from `h-64` to `h-40` (160 px). Center panel gains ~96 px. Desktop layout is unaffected (`md:h-auto` overrides).
+
+**Files changed:** `backend/templates/app/index.html`.
+
+---
+
+### 18.2 Upvote-Based Star Rating
+
+**Problem:** Stars were computed from a weighted point score (upvote = +10, downvote = −5), which meant downvotes suppressed an otherwise popular user's star tier.
+
+**Fix:** Stars are now computed exclusively from total upvotes received. `upvotes_to_stars(upvotes)` reads thresholds from `SCORING["star_thresholds"]`. Both `get_user_score` and the batch author query in `_hydrate_share_rows` were updated to pass `upvotes` (not `score`) to this function.
+
+New thresholds: 1K → 1★, 10K → 2★, 100K → 3★, 1M → 4★, 10M → 5★.
+
+**Files changed:** `backend/api/wall/service.py`.
+
+---
+
+### 18.3 Centralized Scoring Configuration
+
+All point values and rule thresholds were consolidated into a single module-level `SCORING` dict in `backend/api/wall/service.py`. Previously, magic numbers were scattered across the scoring functions and template.
+
+```python
+SCORING: dict = {
+    "upvote_pts": 10, "downvote_pts": -5,
+    "reshare_bonus_pts": 5,
+    "toxic_threshold_dv": 50, "toxic_penalty_pts": -10,
+    "star_thresholds": [1_000, 10_000, 100_000, 1_000_000, 10_000_000],
+}
+```
+
+The score partial route passes `scoring=wall_svc.SCORING` to the template so the modal UI always reflects the live config.
+
+**Files changed:** `backend/api/wall/service.py`, `backend/api/wall/routes.py`.
+
+---
+
+### 18.4 Share Score Events
+
+**New feature:** Points are awarded or deducted when a user reshares a post.
+
+**Rules (evaluated at share time, votes snapshotted):**
+
+| Rule | Condition | Points | Repeated? |
+|---|---|---|---|
+| Reshare bonus | First reshare of another user's post | +5 | No — DB unique index prevents double-award |
+| Toxic penalty | Source post has ≥ 50 downvotes at share time | −10 | Yes — applies every reshare |
+
+**Implementation:**
+
+1. Migration `015_share_score_events.sql` — creates the `share_score_events` table with a partial unique index on `(user_id, source_share_id) WHERE reason = 'reshare_bonus'`.
+
+2. `_evaluate_reshare_events()` — pure function (no DB calls) that takes pre-fetched inputs and returns a list of event dicts. All business logic lives here; adding a new rule means adding one block inside this function and one key to `SCORING`.
+
+3. `create_share()` — after inserting the share row, if `source_share_id` is set it fetches the source post's vote snapshot, calls `_evaluate_reshare_events`, and inserts the resulting events with `ON CONFLICT DO NOTHING` as a DB-level safety net against races.
+
+4. Score queries — both `get_user_score` and `_hydrate_share_rows` add a correlated subquery `SELECT SUM(sse.points) FROM share_score_events WHERE user_id = u.id` to the existing vote-points total.
+
+**Files changed:** `backend/migrations/015_share_score_events.sql` (new), `backend/api/wall/service.py`.
+
+---
+
+### 18.5 Profile Score Modal
+
+**Change:** The inline "How scoring works" detail block in `profile_score.html` was removed. The card now shows only a "How scoring works →" button. All rule detail moved into a full-screen Alpine modal that renders four sections (votes, reshare bonus, toxic penalty, star milestones) using `{{ scoring.* }}` template variables — the UI stays in sync with `SCORING` automatically.
+
+**Files changed:** `backend/templates/partials/profile_score.html`.

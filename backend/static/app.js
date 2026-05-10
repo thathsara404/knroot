@@ -214,11 +214,39 @@ function appState() {
     quizViewState: null,  // { isQuiz, attemptId, quizSessionId, parentSessionId, submitted, score }
     sidebarWidth: parseInt(localStorage.getItem('knroot_sidebar_w') || '256'),
     rightPanelWidth: parseInt(localStorage.getItem('knroot_right_w') || '320'),
+    mobileBottomHeight: parseInt(localStorage.getItem('knroot_mobile_bottom_h') || '160'),
     isPanelDragging: false,
     activeTab: 'root',
     pendingFollowCount: 0,
     newWallPosts: 0,
     shareModal: { open: false, sessionId: null, visibility: 'public', description: '', loading: false },
+
+    // Panel visibility — always resets to default on page refresh (no localStorage).
+    showChat: true,
+    showNews: true,
+    showWallPublic: true,
+    showWallPrivate: true,
+    showProfileMain: true,
+    showProfileScore: true,
+    isMobile: window.innerWidth < 768,
+
+    centerPanelVisible() {
+      if (this.activeTab === 'root')    return this.showChat;
+      if (this.activeTab === 'wall')    return this.showWallPublic;
+      if (this.activeTab === 'profile') return this.showProfileMain;
+      return true;
+    },
+
+    rightPanelVisible() {
+      if (this.activeTab === 'root')    return this.showNews;
+      if (this.activeTab === 'wall')    return this.showWallPrivate;
+      if (this.activeTab === 'profile') return this.showProfileScore;
+      return true;
+    },
+
+    togglePanel(panel) {
+      this[panel] = !this[panel];
+    },
 
     switchTab(tab) {
       this.activeTab = tab;
@@ -292,34 +320,65 @@ function appState() {
       this.$watch('sidebarOpen', (v) => localStorage.setItem('knroot_sidebar', v));
       this.$watch('sidebarWidth', (v) => localStorage.setItem('knroot_sidebar_w', String(v)));
       this.$watch('rightPanelWidth', (v) => localStorage.setItem('knroot_right_w', String(v)));
-      // Release any in-progress drag on mouseup regardless of where it ends
-      window.addEventListener('mouseup', () => {
+      this.$watch('mobileBottomHeight', (v) => localStorage.setItem('knroot_mobile_bottom_h', String(v)));
+      // Release any in-progress drag on mouseup / touchend regardless of where it ends
+      const endDrag = () => {
         this.isPanelDragging = false;
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
+      };
+      window.addEventListener('mouseup', endDrag);
+      window.addEventListener('touchend', endDrag);
+      window.addEventListener('resize', () => {
+        this.isMobile = window.innerWidth < 768;
       });
       window.addEventListener('quiz-view-changed', (e) => {
         this.quizViewState = e.detail.isQuiz ? e.detail : null;
       });
+      // Desktop horizontal drag
       window.addEventListener('mousemove', (e) => {
-        if (!this.isPanelDragging) return;
+        if (!this.isPanelDragging || this._dragSide === 'bottom') return;
+        const container = document.querySelector('[x-data="appState()"]');
         if (this._dragSide === 'left') {
-          const container = document.querySelector('[x-data="appState()"]');
           const ox = container ? container.getBoundingClientRect().left : 0;
           this.sidebarWidth = Math.max(180, Math.min(480, e.clientX - ox));
         } else {
-          const container = document.querySelector('[x-data="appState()"]');
           const right = container ? container.getBoundingClientRect().right : window.innerWidth;
           this.rightPanelWidth = Math.max(200, Math.min(600, right - e.clientX));
         }
       });
+      // Mobile vertical drag — mouse
+      window.addEventListener('mousemove', (e) => {
+        if (!this.isPanelDragging || this._dragSide !== 'bottom') return;
+        this._applyMobileDrag(e.clientY);
+      });
+      // Mobile vertical drag — touch
+      window.addEventListener('touchmove', (e) => {
+        if (!this.isPanelDragging || this._dragSide !== 'bottom') return;
+        e.preventDefault();
+        this._applyMobileDrag(e.touches[0].clientY);
+      }, { passive: false });
+    },
+
+    _applyMobileDrag(clientY) {
+      const wrapper = document.getElementById('mobile-content-wrapper');
+      if (!wrapper) return;
+      const rect = wrapper.getBoundingClientRect();
+      // Height = distance from drag point to bottom of wrapper; clamp 80–70% of wrapper
+      const maxH = Math.floor(rect.height * 0.7);
+      const h = Math.max(80, Math.min(maxH, rect.bottom - clientY));
+      this.mobileBottomHeight = h;
     },
 
     startResize(event, side) {
       this.isPanelDragging = true;
       this._dragSide = side;
-      document.body.style.cursor = 'col-resize';
-      document.body.style.userSelect = 'none';
+      if (side === 'bottom') {
+        document.body.style.userSelect = 'none';
+      } else {
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+      }
     },
 
     setActiveFromEvent(event) {
@@ -1050,11 +1109,15 @@ window.wallHandleNewComment = function (data) {
     var component = window.Alpine && window.Alpine.$data(card);
     if (!component) return;
     var alreadyPresent = component.comments.some(function (c) { return c.id === data.comment.id; });
-    if (alreadyPresent) return; // poster's own card: optimistic update already applied
-    // New comment from another user — update badge and visible list
+    if (alreadyPresent) return; // poster's own card: already updated by HTTP response
     component.commentCount = (component.commentCount || 0) + 1;
     if (component.commentsOpen) {
-      component.comments.push(data.comment);
+      // Section is visible — reload full list so order and nesting are correct.
+      window.wallLoadComments(data.share_id, component);
+    } else if (component.comments.length > 0) {
+      // Section is collapsed but was previously loaded — append so re-opening
+      // shows fresh data without a round-trip (toggleComments always re-fetches anyway).
+      component.comments = component.comments.concat([data.comment]);
     }
   });
 };

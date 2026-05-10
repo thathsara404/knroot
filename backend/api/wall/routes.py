@@ -59,6 +59,7 @@ def score_partial():
         "partials/profile_score.html",
         score_data=score_data,
         profile=profile,
+        scoring=wall_svc.SCORING,
     )
 
 

@@ -2573,3 +2573,287 @@ ALTER TABLE share_comments
 ### 31.5 SSE
 
 The existing `comment_added` event payload includes `parent_comment_id`. `wallHandleNewComment` pushes the comment into the flat `comments` array regardless of level — the template filter places it correctly.
+
+---
+
+## 32. UI Modernization & Client-Side JS Modules
+
+### 32.1 Static JS Module Registry
+
+All client-side JavaScript lives in `backend/static/` as self-contained IIFE modules. Each file is included in `backend/templates/base.html` in load order:
+
+| File | Purpose |
+|---|---|
+| `toast.js` | Non-blocking toast notification system |
+| `confirm.js` | `window.KnrConfirm(msg)` — promise-based custom confirm dialog |
+| `time.js` | Client-side timezone-aware timestamp formatter |
+| `app.js` | Main Alpine.js `appState()` component + all UI orchestration |
+| `quiz.js` | Quiz-specific Alpine component and MCQ interaction logic |
+
+### 32.2 Custom Confirm Dialog (`confirm.js`)
+
+`window.KnrConfirm(message)` returns a `Promise<boolean>`. It injects a modal overlay, wires up Confirm/Cancel buttons, resolves the promise, and self-destructs. Callers use `await KnrConfirm(...)` to replace native `window.confirm()`.
+
+**Usage sites:** delete-session button in the sidebar, delete-share modal in the Wall.
+
+### 32.3 Timezone-Aware Timestamps (`time.js`)
+
+**Problem:** The server-side `pub_date` Jinja filter rendered dates in UTC, so users in UTC+N timezones saw the wrong calendar date on news cards (e.g., "May 9" when their local time was already May 10).
+
+**Solution (industry standard):** Store timestamps as UTC (already done). Emit a `<time datetime="ISO_UTC" data-knr-time>` element with the server-rendered fallback as text content. After page load, `time.js` replaces all matching elements with browser-local formatted strings using `new Date(isoStr)`, which the browser parses as UTC and converts to the local timezone automatically.
+
+**Format produced:**
+
+| Age | Example |
+|---|---|
+| < 1 min | `just now` |
+| < 1 hour | `May 10 · 4m ago` |
+| < 1 day | `May 10 · 3h ago` |
+| 1 day | `May 9 · Yesterday` |
+| 2–6 days | `May 8 · 2d ago` |
+| ≥ 7 days | `May 3` |
+| Different year | `Dec 31, 2025` |
+
+**Three trigger points:**
+1. `DOMContentLoaded` — initial page load
+2. `htmx:afterSwap` — after any HTMX partial replaces content
+3. `setInterval(updateAll, 60000)` — updates relative labels every minute without a page reload
+
+**Template pattern (news_panel.html, topic_news_panel.html, share_card.html):**
+
+```html
+<time
+  class="text-xs text-gray-400"
+  datetime="{{ article.get('published', '') }}"
+  data-knr-time
+>{{ article.get('published', '') | pub_date }}</time>
+```
+
+The `pub_date` filter value is the no-JS fallback; JavaScript overwrites it on load.
+
+---
+
+## 33. Panel Toggle System & Mobile-Responsive Layout
+
+### 33.1 Sub-Toggle Buttons
+
+A sub-toggle row sits above the main bottom nav in the left sidebar. It shows context-specific panel toggle buttons depending on the active tab:
+
+| Active Tab | Left toggle | Right toggle |
+|---|---|---|
+| Root | Chat | News |
+| Wall | Public | My Wall |
+| Profile | Profile | Score |
+
+Both buttons are indigo (active/selected) by default. Clicking a button toggles that panel's visibility. The button turns gray when the panel is hidden. The row is always visible — both on desktop and mobile — regardless of sidebar width.
+
+### 33.2 New `appState()` State Variables
+
+```javascript
+// Panel visibility (always resets to default on page refresh — no localStorage)
+showChat: true,
+showNews: true,
+showWallPublic: true,
+showWallPrivate: true,
+showProfileMain: true,
+showProfileScore: true,
+isMobile: window.innerWidth < 768,
+```
+
+`isMobile` is updated via a `resize` event listener added in `init()`.
+
+### 33.3 Panel Visibility Methods
+
+```javascript
+centerPanelVisible() {
+  if (this.activeTab === 'root')    return this.showChat;
+  if (this.activeTab === 'wall')    return this.showWallPublic;
+  if (this.activeTab === 'profile') return this.showProfileMain;
+  return true;
+},
+
+rightPanelVisible() {
+  if (this.activeTab === 'root')    return this.showNews;
+  if (this.activeTab === 'wall')    return this.showWallPrivate;
+  if (this.activeTab === 'profile') return this.showProfileScore;
+  return true;
+},
+
+togglePanel(panel) { this[panel] = !this[panel]; },
+```
+
+### 33.4 Panel Width & Fill Logic
+
+The right `<aside>` uses a conditional `:style` binding:
+
+```html
+:style="!isMobile
+  ? (centerPanelVisible()
+      ? `width:${rightPanelWidth}px;min-width:200px`
+      : 'flex:1 1 auto')
+  : ''"
+```
+
+When the center panel is hidden (`display:none` via `x-show`), the right panel expands to fill the full content area with `flex:1 1 auto`. When both are visible, it respects the user-dragged `rightPanelWidth`. On mobile, no inline width is applied — Tailwind responsive classes govern layout instead.
+
+### 33.5 Mobile Layout
+
+The content wrapper changed from an implicit row to:
+
+```html
+<div class="flex-1 min-w-0 overflow-hidden flex flex-col md:flex-row">
+```
+
+On screens narrower than `md` (768 px), the three panels stack vertically:
+1. Left sidebar (toggled via hamburger — unchanged)
+2. Center panel (`<main>`) — takes available height
+3. Right panel (`<aside>`) — fixed `h-64` on mobile, `md:h-auto` on desktop
+
+The resize handle between center and right is `hidden md:block` — it only appears on desktop where drag-to-resize is meaningful.
+
+### 33.6 Bottom Nav Wrapping
+
+The main bottom nav uses `flex flex-wrap` and each button carries `min-w-[80px]`:
+
+```html
+<nav class="flex flex-wrap items-stretch border-t border-gray-700">
+  <button class="flex-1 min-w-[80px] ...">Root</button>
+  <button class="flex-1 min-w-[80px] ...">Wall</button>
+  <button class="flex-1 min-w-[80px] ...">Profile</button>
+</nav>
+```
+
+When the sidebar is narrower than 240 px (user-resized), the Profile button wraps to a second row instead of being clipped off-screen.
+
+### 33.7 Updated State Management Summary
+
+| State key | Type | Default | Persisted |
+|---|---|---|---|
+| `showChat` | bool | `true` | No |
+| `showNews` | bool | `true` | No |
+| `showWallPublic` | bool | `true` | No |
+| `showWallPrivate` | bool | `true` | No |
+| `showProfileMain` | bool | `true` | No |
+| `showProfileScore` | bool | `true` | No |
+| `isMobile` | bool | `window.innerWidth < 768` | No (live) |
+
+---
+
+## 34. Mobile Panel Height Fix
+
+The right `<aside>` mobile height was reduced from `h-64` (256 px) to `h-40` (160 px). On a typical phone viewport (~610 px after the top nav), the previous 256 px strip left only ~354 px for the center panel — after subtracting the chat input bar (~60 px) and the "Check Knowledge" toolbar (~46 px), the scrollable messages area was only ~248 px. With `h-40` the center panel gets ~450 px, giving the messages area ~344 px — a 38 % increase.
+
+The fix applies uniformly across all three tabs (Root / Wall / Profile) because all tabs share the single `<aside>` element. On desktop, `md:h-auto` overrides the fixed height so desktop layout is unchanged.
+
+---
+
+## 35. Upvote-Based Star Rating
+
+Stars are now computed from **total upvotes received** on a user's own shares, not from the weighted point score. This separates "popularity" (stars, based on positive community signals) from "activity score" (points, which also includes downvote deductions and share bonus events).
+
+### 35.1 Thresholds
+
+| Upvotes received | Stars |
+|---|---|
+| 0 – 999 | 0 ★ |
+| 1,000 – 9,999 | 1 ★ |
+| 10,000 – 99,999 | 2 ★ |
+| 100,000 – 999,999 | 3 ★ |
+| 1,000,000 – 9,999,999 | 4 ★ |
+| ≥ 10,000,000 | 5 ★ |
+
+### 35.2 Implementation
+
+`upvotes_to_stars(upvotes: int) -> float` in `backend/api/wall/service.py` iterates `SCORING["star_thresholds"]`. Both `get_user_score` (direct profile query) and the batch author query in `_hydrate_share_rows` (wall card author badges) pass the `upvotes` column, not the `score` column, to this function.
+
+---
+
+## 36. Share Score Events System
+
+### 36.1 Design Goals
+
+- All scoring rules live in one place (`SCORING` dict) — changing a threshold or point value requires editing a single constant.
+- Business logic is isolated in a pure function (`_evaluate_reshare_events`) with no DB calls — fully unit-testable.
+- Historical events are immutable snapshots — future vote changes never retroactively alter previously awarded or deducted points.
+
+### 36.2 Centralized `SCORING` Configuration
+
+```python
+SCORING: dict = {
+    "upvote_pts":         10,   # points per upvote received on own shares
+    "downvote_pts":        -5,  # points per downvote received on own shares
+    "reshare_bonus_pts":    5,  # first-time reshare of another user's post
+    "toxic_threshold_dv":  50,  # min downvotes on source post → penalty
+    "toxic_penalty_pts":  -10,  # points deducted per toxic reshare
+    "star_thresholds": [1_000, 10_000, 100_000, 1_000_000, 10_000_000],
+}
+```
+
+The profile score route passes this dict to the template as `scoring`, so the UI always reflects the live config values without a separate update.
+
+### 36.3 Scoring Rules
+
+| Rule | Condition | Amount | Dedup |
+|---|---|---|---|
+| Reshare bonus | First time resharing another user's post | +5 pts | Once per `(user, source_post)` — DB unique index |
+| Toxic-post penalty | Source post had ≥ 50 downvotes at share time | −10 pts | None — fires every reshare |
+
+**Not applicable:**
+- Resharing your own post never earns the bonus.
+- Resharing the same post a second time earns no bonus (but can still incur the penalty each time if the source remains toxic).
+- Vote counts are snapshotted at share time; future votes on the source post do not affect past events.
+
+### 36.4 Pure Evaluator Function
+
+```python
+def _evaluate_reshare_events(
+    sharer_id, source_owner_id,
+    snapshot_upvotes, snapshot_downvotes,
+    already_has_bonus,
+) -> list[dict]:
+```
+
+Returns a list of `{points, reason, snapshot_upvotes, snapshot_downvotes}` dicts. No DB calls — the caller pre-fetches all inputs. To add a new scoring rule, add a block inside this function and a new key to `SCORING`.
+
+### 36.5 `share_score_events` Table
+
+```sql
+CREATE TABLE share_score_events (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id             UUID NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
+    share_id            UUID NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
+    source_share_id     UUID          REFERENCES shares(id) ON DELETE SET NULL,
+    points              INT  NOT NULL,
+    reason              VARCHAR(40) NOT NULL,  -- 'reshare_bonus' | 'toxic_penalty'
+    snapshot_upvotes    INT,
+    snapshot_downvotes  INT,
+    created_at          TIMESTAMPTZ DEFAULT now()
+);
+
+-- Prevents double-awarding the reshare bonus for the same source post.
+CREATE UNIQUE INDEX uq_reshare_bonus_once
+    ON share_score_events (user_id, source_share_id)
+    WHERE reason = 'reshare_bonus';
+```
+
+Migration: `backend/migrations/015_share_score_events.sql`.
+
+### 36.6 Score Calculation
+
+`get_user_score` adds a correlated subquery to the existing vote-points aggregate:
+
+```sql
+COALESCE(SUM(CASE WHEN sv.vote = 1 THEN 10 WHEN sv.vote = -1 THEN -5 ELSE 0 END), 0)
++ COALESCE((SELECT SUM(sse.points) FROM share_score_events sse WHERE sse.user_id = u.id), 0)
+AS score
+```
+
+The same pattern is applied to the batch author score query in `_hydrate_share_rows` so wall card author badges also reflect event points.
+
+### 36.7 Profile Score Modal
+
+`backend/templates/partials/profile_score.html` was restructured:
+
+- The "How scoring works" detail block was removed from the always-visible card.
+- The card now contains a single button that opens a full modal (`x-data="{ showScoringModal: false }"`).
+- The modal renders all four sections (votes, reshare bonus, toxic penalty, star milestones) using `{{ scoring.* }}` template variables sourced from the `SCORING` dict — changes to the config are reflected in the UI automatically.

@@ -104,54 +104,139 @@
       </div>
     </div>
 
-    <!-- Bottom nav: Root / Wall / Profile -->
-    <div class="border-t border-gray-700 flex-shrink-0 min-w-[256px]"
-         x-show="sidebarOpen">
-      <div class="flex items-stretch">
-        <button
-          @click="switchTab('root')"
-          :class="activeTab === 'root' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'"
-          class="flex-1 flex flex-col items-center gap-0.5 py-2.5 text-xs font-medium transition-colors"
-          title="Knowledge Root"
-        >
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
-          </svg>
-          Root
-        </button>
-        <button
-          @click="switchTab('wall')"
-          :class="activeTab === 'wall' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'"
-          class="flex-1 flex flex-col items-center gap-0.5 py-2.5 text-xs font-medium transition-colors"
-          title="Wall"
-        >
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
-          </svg>
-          Wall
-        </button>
-        <button
-          @click="switchTab('profile')"
-          :class="activeTab === 'profile' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'"
-          class="flex-1 flex flex-col items-center gap-0.5 py-2.5 text-xs font-medium transition-colors"
-          title="Profile"
-        >
-          <span class="relative">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <!-- Bottom section: panel sub-toggles + main tab nav -->
+    <div class="flex-shrink-0" x-show="sidebarOpen">
+
+      <!-- Sub-toggle row — context-aware, appears above main nav -->
+      <div class="px-2 py-1.5 bg-gray-800 border-t border-gray-700">
+
+        <!-- Root: Chat | News -->
+        <div class="flex gap-1" x-show="activeTab === 'root'">
+          <button
+            @click="togglePanel('showChat')"
+            :class="showChat ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-white'"
+            class="flex-1 min-w-0 flex items-center justify-center gap-1 py-1 px-2 text-xs font-medium rounded-lg transition-colors"
+          >
+            <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+            </svg>
+            <span>Chat</span>
+          </button>
+          <button
+            @click="togglePanel('showNews')"
+            :class="showNews ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-white'"
+            class="flex-1 min-w-0 flex items-center justify-center gap-1 py-1 px-2 text-xs font-medium rounded-lg transition-colors"
+          >
+            <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z"/>
+            </svg>
+            <span>News</span>
+          </button>
+        </div>
+
+        <!-- Wall: Public | My Wall -->
+        <div class="flex gap-1" x-show="activeTab === 'wall'" x-cloak>
+          <button
+            @click="togglePanel('showWallPublic')"
+            :class="showWallPublic ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-white'"
+            class="flex-1 min-w-0 flex items-center justify-center gap-1 py-1 px-2 text-xs font-medium rounded-lg transition-colors"
+          >
+            <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <span>Public</span>
+          </button>
+          <button
+            @click="togglePanel('showWallPrivate')"
+            :class="showWallPrivate ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-white'"
+            class="flex-1 min-w-0 flex items-center justify-center gap-1 py-1 px-2 text-xs font-medium rounded-lg transition-colors"
+          >
+            <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"/>
+            </svg>
+            <span>My Wall</span>
+          </button>
+        </div>
+
+        <!-- Profile: Profile | Score -->
+        <div class="flex gap-1" x-show="activeTab === 'profile'" x-cloak>
+          <button
+            @click="togglePanel('showProfileMain')"
+            :class="showProfileMain ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-white'"
+            class="flex-1 min-w-0 flex items-center justify-center gap-1 py-1 px-2 text-xs font-medium rounded-lg transition-colors"
+          >
+            <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                     d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
             </svg>
-            <span
-              x-show="pendingFollowCount > 0 && activeTab !== 'profile'"
-              x-text="pendingFollowCount > 9 ? '9+' : pendingFollowCount"
-              x-cloak
-              class="absolute -top-1.5 -right-2.5 min-w-[14px] h-3.5 flex items-center justify-center text-[9px] font-bold bg-red-500 text-white rounded-full px-0.5 leading-none"
-            ></span>
-          </span>
-          Profile
-        </button>
+            <span>Profile</span>
+          </button>
+          <button
+            @click="togglePanel('showProfileScore')"
+            :class="showProfileScore ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-white'"
+            class="flex-1 min-w-0 flex items-center justify-center gap-1 py-1 px-2 text-xs font-medium rounded-lg transition-colors"
+          >
+            <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/>
+            </svg>
+            <span>Score</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Main tab nav: Root / Wall / Profile — flex-wrap so Profile wraps on narrow sidebars -->
+      <div class="border-t border-gray-700">
+        <div class="flex flex-wrap items-stretch">
+          <button
+            @click="switchTab('root')"
+            :class="activeTab === 'root' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'"
+            class="flex-1 min-w-[80px] flex flex-col items-center gap-0.5 py-2.5 text-xs font-medium transition-colors"
+            title="Knowledge Root"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+            </svg>
+            Root
+          </button>
+          <button
+            @click="switchTab('wall')"
+            :class="activeTab === 'wall' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'"
+            class="flex-1 min-w-[80px] flex flex-col items-center gap-0.5 py-2.5 text-xs font-medium transition-colors"
+            title="Wall"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+            </svg>
+            Wall
+          </button>
+          <button
+            @click="switchTab('profile')"
+            :class="activeTab === 'profile' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'"
+            class="flex-1 min-w-[80px] flex flex-col items-center gap-0.5 py-2.5 text-xs font-medium transition-colors"
+            title="Profile"
+          >
+            <span class="relative">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+              </svg>
+              <span
+                x-show="pendingFollowCount > 0 && activeTab !== 'profile'"
+                x-text="pendingFollowCount > 9 ? '9+' : pendingFollowCount"
+                x-cloak
+                class="absolute -top-1.5 -right-2.5 min-w-[14px] h-3.5 flex items-center justify-center text-[9px] font-bold bg-red-500 text-white rounded-full px-0.5 leading-none"
+              ></span>
+            </span>
+            Profile
+          </button>
+        </div>
       </div>
     </div>
   </aside>
@@ -166,148 +251,174 @@
     <div class="absolute inset-y-0 -left-1 -right-1"></div>
   </div>
 
-  <!-- CENTRE PANE -->
-  <main class="flex flex-col flex-1 min-w-0 bg-white overflow-hidden">
+  <!-- CONTENT AREA: columns on desktop, rows on mobile -->
+  <div id="mobile-content-wrapper" class="flex-1 min-w-0 overflow-hidden flex flex-col md:flex-row">
 
-    <!-- New posts notification banner — wall tab only -->
-    <div
-      x-show="activeTab === 'wall' && newWallPosts > 0"
-      x-cloak
-      @click="newWallPosts = 0; htmx.ajax('GET', '/wall/public/partial', {target: '#chat-messages', swap: 'innerHTML'})"
-      class="flex items-center justify-center gap-2 py-2 px-4 bg-gradient-to-r from-indigo-600 to-violet-600 text-white text-xs font-semibold cursor-pointer hover:from-indigo-700 hover:to-violet-700 transition-all flex-shrink-0"
+    <!-- CENTRE PANE -->
+    <main
+      x-show="centerPanelVisible()"
+      class="flex flex-col min-w-0 min-h-0 bg-white overflow-hidden flex-1"
     >
-      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-      </svg>
-      <span x-text="newWallPosts + ' new post' + (newWallPosts === 1 ? '' : 's') + ' — click to refresh'"></span>
-    </div>
-
-    <div id="chat-messages" class="flex-1 overflow-y-auto" :class="activeTab === 'root' ? 'px-4 py-4 space-y-4' : ''">
-      <div id="chat-welcome"
-           x-show="activeTab === 'root' && !activeSessionId"
-           class="flex flex-col items-center justify-center h-full text-gray-400">
-        <svg class="w-16 h-16 mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
-                d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+      <!-- New posts notification banner — wall tab only -->
+      <div
+        x-show="activeTab === 'wall' && newWallPosts > 0"
+        x-cloak
+        @click="newWallPosts = 0; htmx.ajax('GET', '/wall/public/partial', {target: '#chat-messages', swap: 'innerHTML'})"
+        class="flex items-center justify-center gap-2 py-2 px-4 bg-gradient-to-r from-indigo-600 to-violet-600 text-white text-xs font-semibold cursor-pointer hover:from-indigo-700 hover:to-violet-700 transition-all flex-shrink-0"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
         </svg>
-        <p class="text-lg font-medium">Start a conversation</p>
-        <p class="text-sm mt-1">Ask anything or click Explore on a news article</p>
+        <span x-text="newWallPosts + ' new post' + (newWallPosts === 1 ? '' : 's') + ' — click to refresh'"></span>
       </div>
-    </div>
 
-    <!-- Check Knowledge button — shown only when a session is active -->
-    <div x-show="activeTab === 'root' && activeSessionId" x-cloak
-         class="border-t border-gray-100 px-4 py-2 bg-gray-50 flex items-center justify-between">
-      <span class="text-xs text-gray-400">Test your knowledge from this session</span>
-      <button
-        type="button"
-        @click="generateQuiz()"
-        :disabled="quizLoading || chatLoading || contentBusy || (quizViewState && !quizViewState.submitted)"
-        :title="quizViewState && !quizViewState.submitted ? 'Submit the quiz first' : ''"
-        class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg
-               bg-purple-50 text-purple-700 border border-purple-200
-               hover:bg-purple-100 hover:border-purple-300 disabled:opacity-50 transition-colors shadow-sm"
-      >
-        <span x-show="!quizLoading">
-          <span x-show="!quizViewState || !quizViewState.submitted">🧠 Check Knowledge</span>
-          <span x-show="quizViewState && quizViewState.submitted">🧠 Follow-up Quiz</span>
-        </span>
-        <span x-show="quizLoading" class="flex items-center gap-1">
-          <svg class="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+      <div id="chat-messages" class="flex-1 overflow-y-auto" :class="activeTab === 'root' ? 'px-4 py-4 space-y-4' : ''">
+        <div id="chat-welcome"
+             x-show="activeTab === 'root' && !activeSessionId"
+             class="flex flex-col items-center justify-center h-full text-gray-400">
+          <svg class="w-16 h-16 mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
+                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
           </svg>
-          Generating...
-        </span>
-      </button>
-    </div>
+          <p class="text-lg font-medium">Start a conversation</p>
+          <p class="text-sm mt-1">Ask anything or click Explore on a news article</p>
+        </div>
+      </div>
 
-    <div x-show="activeTab === 'root'" class="border-t border-gray-200 bg-white px-4 py-3">
-      <form
-        id="chat-form"
-        hx-post="/chat"
-        hx-target="#chat-messages"
-        hx-swap="beforeend"
-        hx-headers='{"HX-Request": "true"}'
-        hx-on::before-request="setChatLoading(true)"
-        hx-on::after-request="onChatResponse(event)"
-        class="flex gap-2 items-end"
-      >
-        <input type="hidden" name="session_id" x-bind:value="activeSessionId || ''">
-        <textarea
-          name="message"
-          required
-          rows="2"
-          placeholder="Ask anything — science, history, technology, economics…"
-          class="flex-1 resize-none rounded-xl border border-gray-200 px-4 py-2.5 text-sm
-                 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent shadow-sm"
-          @keydown.enter.prevent="if(!$event.shiftKey) $el.closest('form').requestSubmit()"
-        ></textarea>
+      <!-- Check Knowledge button — shown only when a session is active -->
+      <div x-show="activeTab === 'root' && activeSessionId" x-cloak
+           class="border-t border-gray-100 px-4 py-2 bg-gray-50 flex items-center justify-between">
+        <span class="text-xs text-gray-400">Test your knowledge from this session</span>
         <button
-          type="submit"
-          :disabled="chatLoading || contentBusy"
-          class="px-4 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-medium
-                 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          type="button"
+          @click="generateQuiz()"
+          :disabled="quizLoading || chatLoading || contentBusy || (quizViewState && !quizViewState.submitted)"
+          :title="quizViewState && !quizViewState.submitted ? 'Submit the quiz first' : ''"
+          class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg
+                 bg-purple-50 text-purple-700 border border-purple-200
+                 hover:bg-purple-100 hover:border-purple-300 disabled:opacity-50 transition-colors shadow-sm"
         >
-          <span x-show="!chatLoading">Send</span>
-          <span x-show="chatLoading" class="flex items-center gap-1">
-            <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+          <span x-show="!quizLoading">
+            <span x-show="!quizViewState || !quizViewState.submitted">🧠 Check Knowledge</span>
+            <span x-show="quizViewState && quizViewState.submitted">🧠 Follow-up Quiz</span>
+          </span>
+          <span x-show="quizLoading" class="flex items-center gap-1">
+            <svg class="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24">
               <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
               <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
             </svg>
+            Generating...
           </span>
         </button>
-      </form>
-    </div>
-  </main>
-
-  <!-- RIGHT RESIZE HANDLE — desktop only -->
-  <div
-    class="hidden md:block w-1 flex-shrink-0 bg-gray-200 hover:bg-indigo-400 cursor-col-resize transition-colors relative group"
-    style="z-index:10"
-    @mousedown.prevent="startResize($event, 'right')"
-  >
-    <div class="absolute inset-y-0 -left-1 -right-1"></div>
-  </div>
-
-  <!-- RIGHT PANE: News / Knowledge Tree — hidden on mobile, inline on md+ -->
-  <aside
-    class="hidden md:flex flex-shrink-0 border-l border-gray-200 bg-gray-50 overflow-hidden flex-col relative"
-    :style="`width:${rightPanelWidth}px;min-width:200px`"
-  >
-    <!-- Loading overlay shown while news panel is fetching -->
-    <div
-      x-show="newsPanelLoading"
-      x-cloak
-      class="absolute inset-0 z-20 flex items-center justify-center bg-white/75 backdrop-blur-[1px]"
-    >
-      <div class="flex flex-col items-center gap-2 text-indigo-500">
-        <svg class="animate-spin w-6 h-6" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-        </svg>
-        <span class="text-xs font-medium text-gray-500">Loading news…</span>
       </div>
-    </div>
+
+      <div x-show="activeTab === 'root'" class="border-t border-gray-200 bg-white px-4 py-3">
+        <form
+          id="chat-form"
+          hx-post="/chat"
+          hx-target="#chat-messages"
+          hx-swap="beforeend"
+          hx-headers='{"HX-Request": "true"}'
+          hx-on::before-request="setChatLoading(true)"
+          hx-on::after-request="onChatResponse(event)"
+          class="flex gap-2 items-end"
+        >
+          <input type="hidden" name="session_id" x-bind:value="activeSessionId || ''">
+          <textarea
+            name="message"
+            required
+            rows="2"
+            placeholder="Ask anything — science, history, technology, economics…"
+            class="flex-1 resize-none rounded-xl border border-gray-200 px-4 py-2.5 text-sm
+                   focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent shadow-sm"
+            @keydown.enter.prevent="if(!$event.shiftKey) $el.closest('form').requestSubmit()"
+          ></textarea>
+          <button
+            type="submit"
+            :disabled="chatLoading || contentBusy"
+            class="px-4 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-medium
+                   hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <span x-show="!chatLoading">Send</span>
+            <span x-show="chatLoading" class="flex items-center gap-1">
+              <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+            </span>
+          </button>
+        </form>
+      </div>
+    </main>
+
+    <!-- DESKTOP resize handle (right) -->
     <div
-      id="right-panel"
-      hx-get="/news/partial?category=ai"
-      hx-trigger="load"
-      hx-swap="innerHTML"
-      class="flex-1 overflow-y-auto"
+      x-show="rightPanelVisible()"
+      class="hidden md:block w-1 flex-shrink-0 bg-gray-200 hover:bg-indigo-400 cursor-col-resize transition-colors relative group"
+      style="z-index:10"
+      @mousedown.prevent="startResize($event, 'right')"
     >
-      <div class="animate-pulse p-3 space-y-3">
-        {% for _ in range(4) %}
-        <div class="bg-white rounded-lg p-3 space-y-2">
-          <div class="h-4 bg-gray-200 rounded w-3/4"></div>
-          <div class="h-3 bg-gray-200 rounded w-full"></div>
-          <div class="h-3 bg-gray-200 rounded w-2/3"></div>
+      <div class="absolute inset-y-0 -left-1 -right-1"></div>
+    </div>
+
+    <!-- MOBILE vertical resize handle — full-width drag strip between centre and bottom panel -->
+    <div
+      x-show="rightPanelVisible() && isMobile"
+      class="md:hidden flex-shrink-0 h-3 w-full bg-gray-100 border-t border-b border-gray-200
+             flex items-center justify-center cursor-row-resize touch-none select-none"
+      style="z-index:10"
+      @mousedown.prevent="startResize($event, 'bottom')"
+      @touchstart.prevent="startResize($event, 'bottom')"
+    >
+      <div class="w-8 h-1 rounded-full bg-gray-300"></div>
+    </div>
+
+    <!-- RIGHT PANE: News / Wall-private / Profile-score
+         Desktop → fixed width column beside centre pane (expands to fill if centre is hidden)
+         Mobile  → draggable-height row stacked below centre pane                           -->
+    <aside
+      x-show="rightPanelVisible()"
+      class="flex-shrink-0 bg-gray-50 overflow-hidden flex flex-col relative
+             md:border-l md:border-gray-200"
+      :style="isMobile
+        ? `height:${mobileBottomHeight}px`
+        : (centerPanelVisible() ? `width:${rightPanelWidth}px;min-width:200px` : 'flex:1 1 auto')"
+    >
+      <!-- Loading overlay shown while news / wall panel is fetching -->
+      <div
+        x-show="newsPanelLoading"
+        x-cloak
+        class="absolute inset-0 z-20 flex items-center justify-center bg-white/75 backdrop-blur-[1px]"
+      >
+        <div class="flex flex-col items-center gap-2 text-indigo-500">
+          <svg class="animate-spin w-6 h-6" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+          <span class="text-xs font-medium text-gray-500">Loading…</span>
         </div>
-        {% endfor %}
       </div>
-    </div>
-  </aside>
+      <div
+        id="right-panel"
+        hx-get="/news/partial?category=ai"
+        hx-trigger="load"
+        hx-swap="innerHTML"
+        class="flex-1 overflow-y-auto"
+      >
+        <div class="animate-pulse p-3 space-y-3">
+          {% for _ in range(4) %}
+          <div class="bg-white rounded-lg p-3 space-y-2">
+            <div class="h-4 bg-gray-200 rounded w-3/4"></div>
+            <div class="h-3 bg-gray-200 rounded w-full"></div>
+            <div class="h-3 bg-gray-200 rounded w-2/3"></div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </aside>
+
+  </div><!-- end content area -->
 
   <!-- Share Modal -->
   <div

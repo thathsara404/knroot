@@ -46,7 +46,7 @@
     savedToWall: {{ loop_share.saved_to_wall | tojson }},
     toggleComments() {
       this.commentsOpen = !this.commentsOpen;
-      if (this.commentsOpen && this.comments.length === 0) {
+      if (this.commentsOpen) {
         window.wallLoadComments("{{ loop_share.id }}", this);
       }
     },

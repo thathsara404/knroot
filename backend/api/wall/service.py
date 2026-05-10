@@ -35,24 +35,70 @@ def _parse_message_content(content: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Scoring
+# Scoring configuration — single source of truth for all point rules.
+# Change values here; nothing else in the codebase needs to be touched.
 # ---------------------------------------------------------------------------
 
-_STAR_THRESHOLDS = [50, 150, 350, 600, 900]
+SCORING: dict = {
+    # Points awarded/deducted per vote received on your own shares
+    "upvote_pts":          10,
+    "downvote_pts":        -5,
+    # Points awarded when you reshare someone else's post (first time only)
+    "reshare_bonus_pts":    5,
+    # Downvote count on source post that triggers the toxic-post penalty
+    "toxic_threshold_dv":  50,
+    # Points deducted each time you reshare a post that meets the toxic threshold
+    "toxic_penalty_pts":  -10,
+    # Star thresholds — total upvotes received on own shares
+    "star_thresholds": [1_000, 10_000, 100_000, 1_000_000, 10_000_000],
+}
 
 
-def score_to_stars(score: int) -> float:
-    """Map cumulative score to a 0.0-5.0 star rating.
-
-    upvote = +10pts, downvote = -5pts.
-    0pts -> 0 stars, 50pts -> 1 star, 150 -> 2, 350 -> 3, 600 -> 4, 900 -> 5.
-    """
-    if score <= 0:
+def upvotes_to_stars(upvotes: int) -> float:
+    """Map total upvotes received to a 0.0–5.0 star rating."""
+    if upvotes <= 0:
         return 0.0
-    for i, t in enumerate(_STAR_THRESHOLDS):
-        if score < t:
+    for i, t in enumerate(SCORING["star_thresholds"]):
+        if upvotes < t:
             return float(i)
     return 5.0
+
+
+def _evaluate_reshare_events(
+    sharer_id: str,
+    source_owner_id: str,
+    snapshot_upvotes: int,
+    snapshot_downvotes: int,
+    already_has_bonus: bool,
+) -> list[dict]:
+    """Pure scoring logic — no DB calls.
+
+    Returns a list of event dicts to persist.  Each dict has:
+      points, reason, snapshot_upvotes, snapshot_downvotes.
+    Callers supply all inputs; this function only applies the rules.
+    """
+    events: list[dict] = []
+
+    # Rule 1: reshare bonus — others' posts, first time resharing that post only.
+    if source_owner_id != sharer_id and not already_has_bonus:
+        events.append({
+            "points": SCORING["reshare_bonus_pts"],
+            "reason": "reshare_bonus",
+            "snapshot_upvotes": snapshot_upvotes,
+            "snapshot_downvotes": snapshot_downvotes,
+        })
+
+    # Rule 2: toxic-post penalty — applies to every reshare (including own posts)
+    # when the source post had ≥ toxic_threshold_dv downvotes at share time.
+    if snapshot_downvotes >= SCORING["toxic_threshold_dv"]:
+        events.append({
+            "points": SCORING["toxic_penalty_pts"],
+            "reason": "toxic_penalty",
+            "snapshot_upvotes": snapshot_upvotes,
+            "snapshot_downvotes": snapshot_downvotes,
+        })
+
+    return events
 
 
 def get_user_score(user_id: str) -> dict[str, Any]:
@@ -60,7 +106,10 @@ def get_user_score(user_id: str) -> dict[str, Any]:
     row = query_one(
         """
         SELECT
-          COALESCE(SUM(CASE WHEN sv.vote = 1 THEN 10 WHEN sv.vote = -1 THEN -5 ELSE 0 END), 0) AS score,
+          COALESCE(SUM(CASE WHEN sv.vote = 1 THEN 10 WHEN sv.vote = -1 THEN -5 ELSE 0 END), 0)
+          + COALESCE((SELECT SUM(sse.points)
+                      FROM share_score_events sse
+                      WHERE sse.user_id = %s), 0) AS score,
           COALESCE(SUM(CASE WHEN sv.vote = 1 THEN 1 ELSE 0 END), 0) AS upvotes,
           COALESCE(SUM(CASE WHEN sv.vote = -1 THEN 1 ELSE 0 END), 0) AS downvotes,
           COUNT(DISTINCT s.id) AS share_count
@@ -69,13 +118,14 @@ def get_user_score(user_id: str) -> dict[str, Any]:
         LEFT JOIN share_votes sv ON sv.share_id = s.id
         WHERE u.id = %s
         """,
-        (user_id,),
+        (user_id, user_id),
     ) or {}
     score = int(row.get("score") or 0)
+    upvotes = int(row.get("upvotes") or 0)
     return {
         "score": score,
-        "stars": score_to_stars(score),
-        "upvotes": int(row.get("upvotes") or 0),
+        "stars": upvotes_to_stars(upvotes),
+        "upvotes": upvotes,
         "downvotes": int(row.get("downvotes") or 0),
         "share_count": int(row.get("share_count") or 0),
     }
@@ -128,6 +178,49 @@ def create_share(
         """,
         (user_id, session_id, visibility, description or None, source_share_id),
     )
+    # Evaluate and persist score events for reshares (snapshot votes at this moment).
+    if source_share_id:
+        src = query_one(
+            """
+            SELECT s.user_id,
+                   COALESCE(SUM(CASE WHEN sv.vote = 1  THEN 1 ELSE 0 END), 0) AS upvotes,
+                   COALESCE(SUM(CASE WHEN sv.vote = -1 THEN 1 ELSE 0 END), 0) AS downvotes
+            FROM shares s
+            LEFT JOIN share_votes sv ON sv.share_id = s.id
+            WHERE s.id = %s
+            GROUP BY s.user_id
+            """,
+            (source_share_id,),
+        )
+        if src:
+            already_has_bonus = bool(query_one(
+                """
+                SELECT 1 FROM share_score_events
+                WHERE user_id = %s AND source_share_id = %s AND reason = 'reshare_bonus'
+                """,
+                (user_id, source_share_id),
+            ))
+            events = _evaluate_reshare_events(
+                sharer_id=user_id,
+                source_owner_id=str(src["user_id"]),
+                snapshot_upvotes=int(src["upvotes"]),
+                snapshot_downvotes=int(src["downvotes"]),
+                already_has_bonus=already_has_bonus,
+            )
+            for ev in events:
+                execute(
+                    """
+                    INSERT INTO share_score_events
+                        (user_id, share_id, source_share_id,
+                         points, reason, snapshot_upvotes, snapshot_downvotes)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (user_id, str(row["id"]), source_share_id,
+                     ev["points"], ev["reason"],
+                     ev["snapshot_upvotes"], ev["snapshot_downvotes"]),
+                )
+
     author = query_one("SELECT full_name, username FROM users WHERE id = %s", (user_id,)) or {}
     broadcast_event("share_created", {
         "share_id": str(row["id"]),
@@ -239,7 +332,11 @@ def _hydrate_share_rows(rows: list[dict], viewer_user_id: str) -> list[dict[str,
             SELECT u.id, u.full_name, u.username,
                    COALESCE(SUM(CASE WHEN sv.vote = 1 THEN 10
                                      WHEN sv.vote = -1 THEN -5
-                                     ELSE 0 END), 0) AS score
+                                     ELSE 0 END), 0)
+                   + COALESCE((SELECT SUM(sse.points)
+                                FROM share_score_events sse
+                                WHERE sse.user_id = u.id), 0) AS score,
+                   COALESCE(SUM(CASE WHEN sv.vote = 1 THEN 1 ELSE 0 END), 0) AS upvotes
             FROM users u
             LEFT JOIN shares s2 ON s2.user_id = u.id
             LEFT JOIN share_votes sv ON sv.share_id = s2.id
@@ -250,12 +347,13 @@ def _hydrate_share_rows(rows: list[dict], viewer_user_id: str) -> list[dict[str,
         )
         for ar in rows_a:
             score_val = int(ar["score"] or 0)
+            upvote_val = int(ar["upvotes"] or 0)
             authors_by_id[str(ar["id"])] = {
                 "id": str(ar["id"]),
                 "full_name": ar["full_name"],
                 "username": ar["username"],
                 "score": score_val,
-                "stars": score_to_stars(score_val),
+                "stars": upvotes_to_stars(upvote_val),
             }
 
     # Source attribution — fetch original authors for any share that was imported

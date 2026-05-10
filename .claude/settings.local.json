@@ -28,7 +28,10 @@
       "Bash(Select-Object -ExpandProperty FullName)",
       "Bash(Sort-Object)",
       "Bash(python -m py_compile backend/core/scheduler.py)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(Get-Content \"D:\\\\code-setup\\\\ai-agent\\\\docs\\\\ARCHITECTURE.md\")",
+      "Bash(Measure-Object -Line)",
+      "PowerShell(Get-Content *)"
     ]
   }
 }
