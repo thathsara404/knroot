@@ -14,6 +14,17 @@
   <!-- HTMX (CDN — HTML-over-the-wire) -->
   <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
 
+  <!-- KaTeX — math formula rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+
+  <!-- Mermaid — hierarchy charts and diagrams -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+
+  <!-- Chart.js — data charts -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+
   <style>[x-cloak] { display: none !important; }</style>
 
   {% block head %}{% endblock %}
@@ -38,6 +49,7 @@
   <script src="{{ url_for('static', filename='time.js') }}"></script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
   <script src="{{ url_for('static', filename='quiz.js') }}"></script>
+  <script src="{{ url_for('static', filename='artifacts.js') }}"></script>
 
   {% block scripts %}{% endblock %}
 </body>

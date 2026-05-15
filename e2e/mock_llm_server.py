@@ -33,13 +33,20 @@ _SECTIONED = json.dumps({
         "No prior knowledge is assumed. The sections below collectively explain "
         "the concept from foundations through to practical implications."
     ),
+    "hierarchy_diagram": (
+        "flowchart TD\n"
+        "  ROOT[Topic Overview] --> A[Core Concept]\n"
+        "  ROOT --> B[Practical Applications]\n"
+        "  ROOT --> C[Advanced Considerations]"
+    ),
     "sections": [
         {
             "id": "s1",
             "title": "Core Concept",
             "content": (
                 "The core concept is fundamental to understanding this topic. "
-                "It provides the foundation upon which all subsequent ideas rest."
+                "It provides the foundation upon which all subsequent ideas rest. "
+                "The key relationship is $f(x) = \\sigma(wx + b)$ in simplified form."
             ),
             "key_points": [
                 "The primary mechanism operates through iterative refinement",
@@ -51,6 +58,13 @@ _SECTIONED = json.dumps({
                 "than it actually is in real-world usage."
             ),
             "learn_more_topic": "Deep dive into the core mechanism and its variants",
+            "artifacts": [
+                {
+                    "type": "formula",
+                    "latex": "f(x) = \\frac{1}{1 + e^{-x}}",
+                    "caption": "The core mathematical relationship",
+                },
+            ],
         },
         {
             "id": "s2",
@@ -69,6 +83,16 @@ _SECTIONED = json.dumps({
                 "when it is equally important in large distributed systems."
             ),
             "learn_more_topic": "Real-world case studies and performance benchmarks",
+            "artifacts": [
+                {
+                    "type": "chart",
+                    "chart_type": "bar",
+                    "title": "Performance Comparison",
+                    "labels": ["Approach A", "Approach B", "Approach C"],
+                    "datasets": [{"label": "Score", "data": [85, 72, 91]}],
+                    "caption": "Relative performance across three approaches",
+                },
+            ],
         },
         {
             "id": "s3",
@@ -87,6 +111,7 @@ _SECTIONED = json.dumps({
                 "these edge cases until they encounter them in production."
             ),
             "learn_more_topic": "Limitations, edge cases, and open research problems",
+            "artifacts": [],
         },
     ],
     "outro": (

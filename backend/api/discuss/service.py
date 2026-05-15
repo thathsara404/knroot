@@ -10,6 +10,19 @@ from backend.core.llm import build_llm_client
 
 logger = logging.getLogger(__name__)
 
+_ALLOWED_ARTIFACT_TYPES = {"formula", "chart", "diagram"}
+
+
+def _normalise_sectioned(data: dict) -> None:
+    """Ensure new optional fields exist and artifact types are valid."""
+    data.setdefault("hierarchy_diagram", "")
+    for section in data.get("sections", []):
+        raw = section.get("artifacts", [])
+        section["artifacts"] = [
+            a for a in raw
+            if isinstance(a, dict) and a.get("type") in _ALLOWED_ARTIFACT_TYPES
+        ]
+
 
 def _run_discussion_pipeline(user_message: str) -> dict:
     """Run the LLM pipeline and return parsed sectioned dict."""
@@ -22,6 +35,7 @@ def _run_discussion_pipeline(user_message: str) -> dict:
                 text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
             data = json.loads(text)
             if data.get("type") == "sectioned" and isinstance(data.get("sections"), list):
+                _normalise_sectioned(data)
                 return data
         except Exception as exc:
             logger.warning("Pipeline attempt %d failed: %s", _attempt + 1, exc)

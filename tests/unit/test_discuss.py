@@ -138,3 +138,173 @@ def test_learn_more_passes_topic_to_service(authed_client, mocker):
     args = mock.call_args.args
     kwargs = mock.call_args.kwargs
     assert "My Topic" in args or kwargs.get("topic") == "My Topic"
+
+
+# ── _normalise_sectioned — pure function ──────────────────────────────────────
+
+import json as _json
+from backend.api.discuss.service import _normalise_sectioned, _run_discussion_pipeline
+
+
+def test_normalise_adds_hierarchy_diagram_default():
+    data = {"type": "sectioned", "sections": [{"id": "s1", "title": "T"}]}
+    _normalise_sectioned(data)
+    assert data["hierarchy_diagram"] == ""
+
+
+def test_normalise_preserves_existing_hierarchy_diagram():
+    diagram = "flowchart TD\n  ROOT[Topic] --> A[Section]"
+    data = {"type": "sectioned", "hierarchy_diagram": diagram, "sections": []}
+    _normalise_sectioned(data)
+    assert data["hierarchy_diagram"] == diagram
+
+
+def test_normalise_adds_artifacts_default_to_each_section():
+    data = {"type": "sectioned", "sections": [{"id": "s1"}, {"id": "s2"}]}
+    _normalise_sectioned(data)
+    assert data["sections"][0]["artifacts"] == []
+    assert data["sections"][1]["artifacts"] == []
+
+
+def test_normalise_filters_invalid_artifact_types():
+    data = {
+        "type": "sectioned",
+        "sections": [{"id": "s1", "artifacts": [
+            {"type": "formula", "latex": "x^2"},
+            {"type": "HACK", "payload": "bad"},
+        ]}],
+    }
+    _normalise_sectioned(data)
+    kept = data["sections"][0]["artifacts"]
+    assert len(kept) == 1
+    assert kept[0]["type"] == "formula"
+
+
+def test_normalise_handles_empty_sections_list():
+    data = {"type": "sectioned", "sections": []}
+    _normalise_sectioned(data)
+    assert data["hierarchy_diagram"] == ""
+
+
+def test_normalise_handles_missing_sections_key():
+    data = {"type": "sectioned"}
+    _normalise_sectioned(data)
+    assert data["hierarchy_diagram"] == ""
+
+
+# ── _run_discussion_pipeline — normalisation via mocked LLM ──────────────────
+
+_DISCUSS_SVC = "backend.api.discuss.service"
+
+
+def test_pipeline_adds_hierarchy_diagram_to_old_format(mocker):
+    old = {"type": "sectioned", "sections": [{"id": "s1", "title": "T", "content": "C"}]}
+    mock_llm = mocker.MagicMock()
+    mock_llm.invoke.return_value.content = _json.dumps(old)
+    mocker.patch(f"{_DISCUSS_SVC}.build_llm_client", return_value=mock_llm)
+
+    result = _run_discussion_pipeline("test prompt")
+
+    assert result["hierarchy_diagram"] == ""
+    assert result["sections"][0]["artifacts"] == []
+
+
+def test_pipeline_preserves_hierarchy_diagram_when_present(mocker):
+    diagram = "flowchart TD\n  ROOT[AI] --> A[Foundations]"
+    data = {
+        "type": "sectioned",
+        "hierarchy_diagram": diagram,
+        "sections": [{"id": "s1", "title": "Foundations", "content": "C"}],
+    }
+    mock_llm = mocker.MagicMock()
+    mock_llm.invoke.return_value.content = _json.dumps(data)
+    mocker.patch(f"{_DISCUSS_SVC}.build_llm_client", return_value=mock_llm)
+
+    result = _run_discussion_pipeline("test prompt")
+
+    assert result["hierarchy_diagram"] == diagram
+
+
+def test_pipeline_filters_invalid_artifact_types(mocker):
+    data = {
+        "type": "sectioned",
+        "sections": [{"id": "s1", "title": "T", "content": "C", "artifacts": [
+            {"type": "formula", "latex": "E=mc^2"},
+            {"type": "INVALID_TYPE"},
+        ]}],
+    }
+    mock_llm = mocker.MagicMock()
+    mock_llm.invoke.return_value.content = _json.dumps(data)
+    mocker.patch(f"{_DISCUSS_SVC}.build_llm_client", return_value=mock_llm)
+
+    result = _run_discussion_pipeline("test prompt")
+
+    kept = result["sections"][0]["artifacts"]
+    assert len(kept) == 1
+    assert kept[0]["type"] == "formula"
+
+
+# ── template rendering — hierarchy + diagram artifact in discuss response ─────
+
+# Rich fixture: hierarchy_diagram + a diagram artifact on s1.
+_DISCUSS_RICH = {
+    "session_id": "sess-discuss-1",
+    "thread_id": "thread-discuss-1",
+    "title": "Constitutional Case",
+    "first_response": {
+        "type": "sectioned",
+        "intro": "This article touches on constitutional principles.",
+        "hierarchy_diagram": (
+            "flowchart TD\n"
+            "  ROOT[Constitutional Law] --> A[Separation of Powers]\n"
+            "  ROOT --> B[Judicial Review]"
+        ),
+        "sections": [
+            {
+                "id": "s1",
+                "title": "Separation of Powers",
+                "content": "The three branches of government are kept distinct.",
+                "key_points": ["Executive", "Legislative", "Judicial"],
+                "misconception": "Not an absolute separation.",
+                "learn_more_topic": "Checks and Balances",
+                "artifacts": [
+                    {
+                        "type": "diagram",
+                        "mermaid": "flowchart TD\n  Exec --> Congress\n  Congress --> Courts\n  Courts --> Exec",
+                        "caption": "Power flow between branches",
+                    },
+                ],
+            },
+            {
+                "id": "s2",
+                "title": "Judicial Review",
+                "content": "Courts can strike down unconstitutional laws.",
+                "key_points": ["Marbury v Madison"],
+                "misconception": "Not explicitly in the Constitution.",
+                "learn_more_topic": "Constitutional Interpretation",
+                "artifacts": [],
+            },
+        ],
+        "outro": "These principles form the foundation of modern governance.",
+    },
+}
+
+
+def test_news_discuss_htmx_renders_hierarchy_diagram_wrapper(authed_client, mocker):
+    mocker.patch(f"{SVC}.news_discuss", return_value=_DISCUSS_RICH)
+    resp = authed_client.post("/news/discuss", json={
+        "article_id": "art-1",
+        "article_title": "Constitutional Case",
+        "article_link": "https://test.com/article",
+    }, headers=HTMX)
+    assert b"hierarchy-diagram-wrapper" in resp.data
+
+
+def test_news_discuss_htmx_renders_diagram_artifact_toggle(authed_client, mocker):
+    mocker.patch(f"{SVC}.news_discuss", return_value=_DISCUSS_RICH)
+    resp = authed_client.post("/news/discuss", json={
+        "article_id": "art-1",
+        "article_title": "Constitutional Case",
+        "article_link": "https://test.com/article",
+    }, headers=HTMX)
+    assert b"Show Diagram" in resp.data

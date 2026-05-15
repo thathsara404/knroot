@@ -336,3 +336,106 @@ class TestSessionNavigation:
             timeout=_EXPLORE_TIMEOUT,
         )
         assert page.locator("#session-list a").count() == before + 1
+
+
+# ---------------------------------------------------------------------------
+# Artifact rendering — hierarchy chart and artifact toggles
+# ---------------------------------------------------------------------------
+# The mock LLM returns a _SECTIONED response that includes:
+#   • hierarchy_diagram  (flowchart TD with 3 section nodes)
+#   • s1 artifacts: [formula]
+#   • s2 artifacts: [bar chart]
+#   • s3 artifacts: []
+# These tests verify that the frontend renders and toggles them correctly.
+
+_ARTIFACT_TIMEOUT = 8_000
+
+
+class TestArtifactsRendering:
+    def test_hierarchy_chart_wrapper_rendered_in_response(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Explain gradient descent")
+        # hierarchy-diagram-wrapper is server-rendered; no JS interaction required
+        page.wait_for_selector(".hierarchy-diagram-wrapper", timeout=_ARTIFACT_TIMEOUT)
+        expect(page.locator(".hierarchy-diagram-wrapper").first).to_be_visible()
+
+    def test_formula_artifact_toggle_button_present(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "What is the sigmoid function?")
+        page.wait_for_selector('button:has-text("Show Formula")', timeout=_ARTIFACT_TIMEOUT)
+        expect(page.locator('button:has-text("Show Formula")').first).to_be_visible()
+
+    def test_chart_artifact_toggle_button_present(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Compare ML approaches")
+        page.wait_for_selector('button:has-text("Show Chart")', timeout=_ARTIFACT_TIMEOUT)
+        expect(page.locator('button:has-text("Show Chart")').first).to_be_visible()
+
+    def test_formula_toggle_reveals_katex_panel(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Explain backpropagation")
+        page.wait_for_selector('button:has-text("Show Formula")', timeout=_ARTIFACT_TIMEOUT)
+        page.locator('button:has-text("Show Formula")').first.click()
+        # Alpine x-show makes the panel visible; katex-block is inside it
+        expect(page.locator(".katex-block").first).to_be_visible(timeout=5_000)
+
+    def test_formula_toggle_button_text_changes_to_hide(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "What is softmax?")
+        page.wait_for_selector('button:has-text("Show Formula")', timeout=_ARTIFACT_TIMEOUT)
+        page.locator('button:has-text("Show Formula")').first.click()
+        expect(
+            page.locator('button:has-text("Hide Formula")').first
+        ).to_be_visible(timeout=5_000)
+
+    def test_chart_toggle_reveals_canvas(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Show me a performance comparison")
+        page.wait_for_selector('button:has-text("Show Chart")', timeout=_ARTIFACT_TIMEOUT)
+        page.locator('button:has-text("Show Chart")').first.click()
+        # Canvas element becomes visible; Chart.js renders on it asynchronously
+        expect(page.locator("canvas.artifact-chart").first).to_be_visible(timeout=5_000)
+
+    def test_formula_panel_collapses_on_second_click(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Explain activation functions")
+        page.wait_for_selector('button:has-text("Show Formula")', timeout=_ARTIFACT_TIMEOUT)
+        btn = page.locator('button:has-text("Show Formula")').first
+        # Open
+        btn.click()
+        expect(page.locator(".katex-block").first).to_be_visible(timeout=5_000)
+        # Close
+        page.locator('button:has-text("Hide Formula")').first.click()
+        page.wait_for_timeout(300)
+        expect(page.locator(".katex-block").first).not_to_be_visible()
+
+    def test_sections_without_artifacts_show_no_toggle(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "What are advanced ML considerations?")
+        page.wait_for_selector("text=Advanced Considerations", timeout=_ARTIFACT_TIMEOUT)
+        # s3 has no artifacts — no Show Diagram button should exist for that card
+        # (s1 has formula, s2 has chart — those toggles exist; s3 must have none)
+        # We verify by checking the total toggle count matches only s1 and s2
+        page.wait_for_selector('button:has-text("Show Formula")', timeout=_ARTIFACT_TIMEOUT)
+        formula_count = page.locator('button:has-text("Show Formula")').count()
+        chart_count = page.locator('button:has-text("Show Chart")').count()
+        diagram_count = page.locator('button:has-text("Show Diagram")').count()
+        assert formula_count >= 1
+        assert chart_count >= 1
+        assert diagram_count == 0   # no diagram artifact in mock response

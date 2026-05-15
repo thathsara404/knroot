@@ -41,7 +41,14 @@
       "Bash(Select-Object Name, PSIsContainer)",
       "Bash(xxd \"D:\\\\code-setup\\\\ai-agent\\\\e2etestresult.txt\")",
       "Bash(grep -n \"text=Knowledge Check\\\\|knr-quiz-root\\\\|knr-confirm-ok\\\\|wait_for_timeout\\(1_500\\)\\\\|try:\\\\|except Exception:\\\\|pass$\" D:/code-setup/ai-agent/e2e/test_wall.py)",
-      "Bash(grep -n \"wait_for_timeout\\(500\\)\\\\|wait_for_timeout\\(800\\)\\\\|try:\\\\|except Exception:\\\\|pass$\" D:/code-setup/ai-agent/e2e/test_wall.py)"
+      "Bash(grep -n \"wait_for_timeout\\(500\\)\\\\|wait_for_timeout\\(800\\)\\\\|try:\\\\|except Exception:\\\\|pass$\" D:/code-setup/ai-agent/e2e/test_wall.py)",
+      "Bash(Get-ChildItem -Path \"D:\\\\code-setup\\\\ai-agent\" -Recurse -Directory)",
+      "Bash(Select-Object -First 30 FullName)",
+      "Bash(git checkout *)",
+      "Bash(dir D:\\\\code-setup\\\\ai-agent\\\\backend\\\\static\\\\ *)",
+      "Bash(git *)",
+      "Bash(Get-ChildItem -Path \"D:\\\\code-setup\\\\ai-agent\" -Directory)",
+      "Bash(Select-Object Name)"
     ]
   }
 }

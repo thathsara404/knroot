@@ -185,3 +185,198 @@ def test_parse_fenced_without_language_tag_still_works():
     fenced = f"```\n{_json.dumps(data)}\n```"
     val, typ = _parse_llm_response(fenced)
     assert typ == "sectioned"
+
+
+# ── _parse_llm_response — hierarchy_diagram + artifacts normalisation ─────────
+
+def test_parse_sectioned_missing_hierarchy_diagram_defaults_to_empty_string():
+    data = {"type": "sectioned", "sections": [{"id": "s1", "title": "T", "content": "C"}]}
+    val, typ = _parse_llm_response(_json.dumps(data))
+    assert typ == "sectioned"
+    assert val["hierarchy_diagram"] == ""
+
+
+def test_parse_sectioned_preserves_hierarchy_diagram_when_present():
+    diagram = "flowchart TD\n  ROOT[ML] --> A[SGD]\n  ROOT --> B[Adam]"
+    data = {"type": "sectioned", "hierarchy_diagram": diagram,
+            "sections": [{"id": "s1", "title": "SGD", "content": "C"}]}
+    val, typ = _parse_llm_response(_json.dumps(data))
+    assert val["hierarchy_diagram"] == diagram
+
+
+def test_parse_sectioned_missing_artifacts_defaults_to_empty_list():
+    data = {"type": "sectioned", "sections": [{"id": "s1", "title": "T", "content": "C"}]}
+    val, _ = _parse_llm_response(_json.dumps(data))
+    assert val["sections"][0]["artifacts"] == []
+
+
+def test_parse_sectioned_keeps_all_valid_artifact_types():
+    artifacts = [
+        {"type": "formula", "latex": "E=mc^2", "caption": "Energy"},
+        {"type": "chart", "chart_type": "line", "labels": [], "datasets": []},
+        {"type": "diagram", "mermaid": "flowchart LR\n  A --> B", "caption": "Flow"},
+    ]
+    data = {"type": "sectioned",
+            "sections": [{"id": "s1", "title": "T", "content": "C", "artifacts": artifacts}]}
+    val, _ = _parse_llm_response(_json.dumps(data))
+    assert len(val["sections"][0]["artifacts"]) == 3
+
+
+def test_parse_sectioned_filters_invalid_artifact_types():
+    artifacts = [
+        {"type": "formula", "latex": "x^2"},
+        {"type": "INVALID"},
+        {"type": "unknown", "data": "bad"},
+    ]
+    data = {"type": "sectioned",
+            "sections": [{"id": "s1", "title": "T", "content": "C", "artifacts": artifacts}]}
+    val, _ = _parse_llm_response(_json.dumps(data))
+    kept = val["sections"][0]["artifacts"]
+    assert len(kept) == 1
+    assert kept[0]["type"] == "formula"
+
+
+def test_parse_sectioned_empty_artifacts_list_preserved():
+    data = {"type": "sectioned",
+            "sections": [{"id": "s1", "title": "T", "content": "C", "artifacts": []}]}
+    val, _ = _parse_llm_response(_json.dumps(data))
+    assert val["sections"][0]["artifacts"] == []
+
+
+def test_parse_sectioned_all_sections_get_artifacts_default():
+    data = {
+        "type": "sectioned",
+        "sections": [
+            {"id": "s1", "title": "T1", "content": "C"},
+            {"id": "s2", "title": "T2", "content": "C"},
+            {"id": "s3", "title": "T3", "content": "C",
+             "artifacts": [{"type": "formula", "latex": "x"}]},
+        ],
+    }
+    val, _ = _parse_llm_response(_json.dumps(data))
+    assert val["sections"][0]["artifacts"] == []
+    assert val["sections"][1]["artifacts"] == []
+    assert len(val["sections"][2]["artifacts"]) == 1
+
+
+# ── template rendering — hierarchy chart and artifact zones ───────────────────
+
+# Rich fixture: includes hierarchy_diagram and formula + chart artifacts on s1.
+_SECTIONED_RICH = {
+    "response": {
+        "type": "sectioned",
+        "intro": "Overview of the topic.",
+        "hierarchy_diagram": (
+            "flowchart TD\n"
+            "  ROOT[Machine Learning] --> S1[Gradient Descent]\n"
+            "  ROOT --> S2[Applications]"
+        ),
+        "sections": [
+            {
+                "id": "s1",
+                "title": "Gradient Descent",
+                "content": "Optimization via $\\nabla J(\\theta)$.",
+                "key_points": ["Iterative", "Gradient-based"],
+                "misconception": "Not always slow.",
+                "learn_more_topic": "SGD variants",
+                "artifacts": [
+                    {
+                        "type": "formula",
+                        "latex": "\\theta := \\theta - \\alpha \\nabla J(\\theta)",
+                        "caption": "Parameter update rule",
+                    },
+                    {
+                        "type": "chart",
+                        "chart_type": "line",
+                        "title": "Training Loss",
+                        "labels": ["Epoch 1", "Epoch 2", "Epoch 3"],
+                        "datasets": [{"label": "Loss", "data": [0.9, 0.6, 0.3]}],
+                        "caption": "Loss decreases over epochs",
+                    },
+                ],
+            },
+            {
+                "id": "s2",
+                "title": "Applications",
+                "content": "Used widely in ML.",
+                "key_points": ["Neural networks"],
+                "misconception": "Not just NN.",
+                "learn_more_topic": "NLP applications",
+                "artifacts": [],
+            },
+        ],
+        "outro": "Start with Gradient Descent.",
+    },
+    "response_type": "sectioned",
+    "session_id": "sess-1",
+    "is_new_conversation": True,
+    "suggested_topics": [],
+}
+
+
+def test_chat_htmx_rich_renders_hierarchy_diagram_wrapper(authed_client, mocker):
+    mocker.patch(f"{CHAT_ROUTES}.get_or_create_session", return_value="sess-1")
+    mocker.patch(f"{CHAT_ROUTES}.send_message", return_value=_SECTIONED_RICH)
+    mocker.patch(f"{CHAT_ROUTES}.auto_title_session")
+    resp = authed_client.post("/chat", json={"message": "Explain ML"}, headers=HTMX)
+    assert b"hierarchy-diagram-wrapper" in resp.data
+
+
+def test_chat_htmx_rich_renders_section_title_data_attribute(authed_client, mocker):
+    mocker.patch(f"{CHAT_ROUTES}.get_or_create_session", return_value="sess-1")
+    mocker.patch(f"{CHAT_ROUTES}.send_message", return_value=_SECTIONED_RICH)
+    mocker.patch(f"{CHAT_ROUTES}.auto_title_session")
+    resp = authed_client.post("/chat", json={"message": "Explain ML"}, headers=HTMX)
+    assert b"data-section-title" in resp.data
+
+
+def test_chat_htmx_rich_renders_formula_artifact_toggle(authed_client, mocker):
+    mocker.patch(f"{CHAT_ROUTES}.get_or_create_session", return_value="sess-1")
+    mocker.patch(f"{CHAT_ROUTES}.send_message", return_value=_SECTIONED_RICH)
+    mocker.patch(f"{CHAT_ROUTES}.auto_title_session")
+    resp = authed_client.post("/chat", json={"message": "Explain ML"}, headers=HTMX)
+    assert b"Show Formula" in resp.data
+
+
+def test_chat_htmx_rich_renders_chart_artifact_toggle(authed_client, mocker):
+    mocker.patch(f"{CHAT_ROUTES}.get_or_create_session", return_value="sess-1")
+    mocker.patch(f"{CHAT_ROUTES}.send_message", return_value=_SECTIONED_RICH)
+    mocker.patch(f"{CHAT_ROUTES}.auto_title_session")
+    resp = authed_client.post("/chat", json={"message": "Explain ML"}, headers=HTMX)
+    assert b"Show Chart" in resp.data
+
+
+def test_chat_htmx_rich_renders_katex_block_for_formula(authed_client, mocker):
+    mocker.patch(f"{CHAT_ROUTES}.get_or_create_session", return_value="sess-1")
+    mocker.patch(f"{CHAT_ROUTES}.send_message", return_value=_SECTIONED_RICH)
+    mocker.patch(f"{CHAT_ROUTES}.auto_title_session")
+    resp = authed_client.post("/chat", json={"message": "Explain ML"}, headers=HTMX)
+    assert b"katex-block" in resp.data
+
+
+def test_chat_htmx_rich_renders_chart_canvas(authed_client, mocker):
+    mocker.patch(f"{CHAT_ROUTES}.get_or_create_session", return_value="sess-1")
+    mocker.patch(f"{CHAT_ROUTES}.send_message", return_value=_SECTIONED_RICH)
+    mocker.patch(f"{CHAT_ROUTES}.auto_title_session")
+    resp = authed_client.post("/chat", json={"message": "Explain ML"}, headers=HTMX)
+    assert b"artifact-chart" in resp.data
+
+
+def test_chat_htmx_plain_sectioned_no_hierarchy_when_absent(authed_client, mocker):
+    # _SECTIONED fixture has no hierarchy_diagram — wrapper must not render
+    mocker.patch(f"{CHAT_ROUTES}.get_or_create_session", return_value="sess-1")
+    mocker.patch(f"{CHAT_ROUTES}.send_message", return_value=_SECTIONED)
+    mocker.patch(f"{CHAT_ROUTES}.auto_title_session")
+    resp = authed_client.post("/chat", json={"message": "Explain it"}, headers=HTMX)
+    assert b"hierarchy-diagram-wrapper" not in resp.data
+
+
+def test_chat_htmx_plain_sectioned_no_artifact_toggles_when_absent(authed_client, mocker):
+    # _SECTIONED fixture has no artifacts — no toggle buttons must appear
+    mocker.patch(f"{CHAT_ROUTES}.get_or_create_session", return_value="sess-1")
+    mocker.patch(f"{CHAT_ROUTES}.send_message", return_value=_SECTIONED)
+    mocker.patch(f"{CHAT_ROUTES}.auto_title_session")
+    resp = authed_client.post("/chat", json={"message": "Explain it"}, headers=HTMX)
+    assert b"Show Formula" not in resp.data
+    assert b"Show Chart" not in resp.data
+    assert b"Show Diagram" not in resp.data

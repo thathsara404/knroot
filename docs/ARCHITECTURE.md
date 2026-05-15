@@ -57,20 +57,23 @@ A **news-anchored AI learning platform** where users can explore any topic — t
 
 ## 3. Tech Stack
 
-| Layer         | Technology                            | Rationale                                                               |
-|---------------|---------------------------------------|-------------------------------------------------------------------------|
-| Templates     | Jinja2 (Flask built-in)               | Server-side rendering; no npm, no build step, no separate process       |
-| Interactivity | HTMX                                  | Partial page updates via HTML-over-the-wire; loaded from CDN            |
-| Client state  | Alpine.js (CDN)                       | Lightweight reactivity for toggles, tabs, dropdowns — no framework      |
-| Styling       | Tailwind CSS (CDN)                    | Utility-first CSS; CDN removes all Node.js/npm from the stack           |
-| Backend       | Flask 3 (Python)                      | Serves both Jinja2 pages and REST/HTMX partial responses                |
-| Validation    | Pydantic v2                           | Request schema validation at the HTTP boundary; `@model_validator` for cross-field rules |
-| Auth          | Flask-Session + Redis + bcrypt        | Server-side sessions stored in Redis; signed cookie; simpler than JWT for SSR |
-| AI Chat       | LangGraph + OpenRouter                | Existing; graph-based agent with persistent checkpointing               |
-| MCQ Generation| OpenRouter LLM (separate call)        | Reuse existing LLM key; dedicated prompt chain                          |
-| Cache/Session | Redis 7                               | Shared for news cache (day/hour TTL) and Flask-Session storage          |
-| Database      | PostgreSQL 16                         | Existing; adds user, session, and quiz tables                           |
-| Container     | Docker Compose                        | Single web service — no separate frontend container required            |
+| Layer            | Technology                            | Rationale                                                               |
+|------------------|---------------------------------------|-------------------------------------------------------------------------|
+| Templates        | Jinja2 (Flask built-in)               | Server-side rendering; no npm, no build step, no separate process       |
+| Interactivity    | HTMX                                  | Partial page updates via HTML-over-the-wire; loaded from CDN            |
+| Client state     | Alpine.js (CDN)                       | Lightweight reactivity for toggles, tabs, dropdowns — no framework      |
+| Styling          | Tailwind CSS (CDN)                    | Utility-first CSS; CDN removes all Node.js/npm from the stack           |
+| Math rendering   | KaTeX (CDN)                           | LaTeX formula rendering; faster than MathJax; auto-renders `$...$` delimiters in content text |
+| Diagrams         | Mermaid.js v11 (CDN)                  | Hierarchy charts and flow diagrams from LLM-generated text definitions  |
+| Data charts      | Chart.js v4 (CDN)                     | Line, bar, scatter, pie charts from LLM-specified data specs            |
+| Backend          | Flask 3 (Python)                      | Serves both Jinja2 pages and REST/HTMX partial responses                |
+| Validation       | Pydantic v2                           | Request schema validation at the HTTP boundary; `@model_validator` for cross-field rules |
+| Auth             | Flask-Session + Redis + bcrypt        | Server-side sessions stored in Redis; signed cookie; simpler than JWT for SSR |
+| AI Chat          | LangGraph + OpenRouter                | Existing; graph-based agent with persistent checkpointing               |
+| MCQ Generation   | OpenRouter LLM (separate call)        | Reuse existing LLM key; dedicated prompt chain                          |
+| Cache/Session    | Redis 7                               | Shared for news cache (day/hour TTL) and Flask-Session storage          |
+| Database         | PostgreSQL 16                         | Existing; adds user, session, and quiz tables                           |
+| Container        | Docker Compose                        | Single web service — no separate frontend container required            |
 
 ---
 
@@ -1383,57 +1386,128 @@ Generate 3–5 sections. Each section must be about a distinct, learnable concep
 
 ### 18.1 Backend Parsing
 
-When the backend receives the LangGraph response for a `news_discussion` or `learn_more` first turn:
+When the backend receives the LangGraph response for any substantive educational query:
 1. Attempt `json.loads(response)`.
 2. Validate schema: `type == 'sectioned'`, `sections` is array, each section has `id`, `title`, `content`, `learn_more_topic`.
-3. If valid: store as-is in the message content field (JSONB or JSON string in LangGraph checkpoint).
-4. If invalid (LLM didn't follow format): retry once with an explicit format correction prompt. If still invalid, store as plain text with `type: 'plain'`.
+3. Call `_normalise_sectioned(data)` to backfill optional fields:
+   - `hierarchy_diagram` → `""` if absent (backward-compatible with old stored messages)
+   - `section.artifacts` → `[]` if absent; invalid artifact types filtered out
+4. If valid: store as-is in `session_messages.content` (TEXT/JSON string).
+5. If invalid: retry once; if still invalid, fall back to `{ type: 'plain', text: "..." }`.
 
 ### 18.2 Message Content Shape
 
 ```typescript
 type MessageContent =
   | { type: 'plain';    text: string }
-  | { type: 'sectioned'; intro: string; sections: Section[]; outro: string }
+  | { type: 'sectioned'; intro: string; hierarchy_diagram: string; sections: Section[]; outro: string }
 
 interface Section {
   id:                string
   title:             string
-  content:           string
+  content:           string          // may contain $...$ inline LaTeX markers
+  key_points:        string[]
+  misconception:     string
   learn_more_topic:  string
+  artifacts:         Artifact[]      // empty array when no visuals needed
 }
+
+type Artifact =
+  | { type: 'formula'; latex: string; caption: string }
+  | { type: 'chart';   chart_type: 'line'|'bar'|'scatter'|'pie';
+      title: string; labels: string[]; datasets: Dataset[]; caption: string }
+  | { type: 'diagram'; mermaid: string; caption: string }
+
+interface Dataset { label: string; data: number[] }
 ```
+
+**Backward compatibility:** `hierarchy_diagram` and `artifacts` are optional in stored messages. `_normalise_sectioned()` adds defaults on every read so templates always receive complete objects.
+
+**Artifact rules (LLM guidance in prompts):**
+- A section may have 0, 1, or at most 2 artifacts.
+- Inline `$formula$` in content text is preferred over a `formula` artifact for short expressions.
+- `chart` artifacts carry a simplified spec; the frontend transforms it to a full Chart.js config.
+- Only `formula`, `chart`, and `diagram` types are accepted; any other `type` value is stripped by the normaliser.
 
 ### 18.3 Frontend Rendering
 
-**`SectionedMessage` component** (replaces `Message` for sectioned content):
+**`sectioned_message.html`** (Jinja2 partial — main chat and wall preview modal share identical markup):
+
 ```
-┌────────────────────────────────────────────────────────────┐
-│ This news touches on several constitutional principles...  │  ← intro
-│                                                             │
-│ ┌──────────────────────────────────────────────────────┐  │
-│ │ ⚡ War Powers Resolution Act                          │  │  ← section card
-│ │                                                       │  │
-│ │ The War Powers Resolution of 1973 (50 U.S.C. §§     │  │
-│ │ 1541–1548) requires the President to notify Congress │  │
-│ │ within 48 hours of committing armed forces...        │  │
-│ │                                              [Learn More →] │
-│ └──────────────────────────────────────────────────────┘  │
-│                                                             │
-│ ┌──────────────────────────────────────────────────────┐  │
-│ │ ⚡ Article I, Section 8 — Congressional War Powers   │  │
-│ │ ...                                    [Learn More →] │  │
-│ └──────────────────────────────────────────────────────┘  │
-│                                                             │
-│ These constitutional provisions together form the...       │  ← outro
-└────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ This topic covers three key areas...                         │  ← intro (indigo-50 card)
+├──────────────────────────────────────────────────────────────┤
+│ TOPIC OVERVIEW                                               │  ← hierarchy chart (white card)
+│                                                              │
+│   [Neural Networks]                                          │    Mermaid flowchart TD
+│        │                                                     │    rendered by artifacts.js
+│   ┌────┴─────┬──────────┐                                   │    nodes clickable →
+│ [Foundations] [Architecture] [Training]                      │    smooth-scroll to section
+└──────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│ ⚡ Foundations                                               │  ← section card
+│                                                              │    data-section-title="Foundations"
+│  The core idea is f(x) = σ(Wx + b)...                       │    katex-render class →
+│                                                              │    KaTeX auto-renders $...$
+│  • Key point one                                             │
+│  • Key point two                                             │
+│                                                              │
+│  ⚠ Common misconception: ...                                 │
+│                                                              │
+│  [∑ Show Formula ▾]   ← collapsed artifact toggle (Alpine)  │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │  σ(x) = 1 / (1 + e^{-x})      ← KaTeX block display  │  │  revealed on click
+│  │  The sigmoid activation function                        │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                              │
+│  [📊 Show Chart ▾]                                           │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │  [Chart.js bar/line/scatter/pie canvas 220px high]     │  │  revealed on click
+│  │  Caption text                                           │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                              │
+│  [Explore]  [Quiz]                                           │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-**[Learn More →]** click handler:
-1. Show loading spinner on the button.
-2. `POST /sessions/{currentSessionId}/learn-more` with `{topic: section.learn_more_topic}`.
-3. `window.open('/learn/{new_session_id}', '_blank', 'noopener,noreferrer')`.
-4. Button becomes disabled (greyed, checkmark icon) after opening — prevents duplicate tabs.
+**Artifact toggle behaviour:**
+- All artifact panels are collapsed by default (`x-show="open"`, `open` initialised to `false`).
+- On first click: `done = true`, then `$nextTick(() => window.initArtifacts($refs.panel))` initialises KaTeX/Mermaid/Chart.js lazily within the revealed panel — avoids Chart.js sizing issues on hidden canvases.
+- Subsequent clicks toggle `open` without re-initialising (Chart.js instance persists on canvas).
+- Toggle button text flips between "Show X" / "Hide X".
+
+**Rendering surfaces** — both templates receive the same `data` dict and produce identical markup:
+
+| Surface | Template | Artifacts rendered? |
+|---------|----------|---------------------|
+| Main chat (after AI reply) | `partials/sectioned_message.html` | Yes — full |
+| Wall preview modal | `partials/share_session_preview.html` | Yes — full |
+| Imported session (after wall import) | Same as main chat | Yes — free (deep-copy preserves JSON) |
+| Wall share card (feed glance) | `partials/share_card.html` | No — metadata only |
+
+### 18.4 Artifact Renderer (`backend/static/artifacts.js`)
+
+Single IIFE module, loaded globally via `base.html`. Exposes `window.initArtifacts(container)`.
+
+**Initialisation triggers:**
+- `DOMContentLoaded` — initial page load.
+- `htmx:afterSettle` — after every HTMX swap (chat response, preview modal lazy-load, explore session load).
+- Alpine `@click` with `$nextTick` — lazy init of collapsed artifact panels on first open.
+
+**Per-library behaviour:**
+
+| Library | Selector | Idempotency guard | Notes |
+|---------|----------|-------------------|-------|
+| Mermaid | `.mermaid-wrapper:not([data-processed])` | `data-processed` attr | Converts wrapper → `<div class="mermaid">` via `textContent` (XSS-safe); calls `mermaid.run({nodes})` |
+| KaTeX auto-render | `.katex-render:not([data-katex-done])` | `data-katex-done` attr | Renders `$...$` and `$$...$$` in section content paragraphs and key-point spans |
+| KaTeX block | `.katex-block:not([data-katex-done])` | `data-katex-done` attr | Renders `data-latex` attribute value in display mode |
+| Chart.js | `canvas.artifact-chart:not([data-chart-done])` | `data-chart-done` attr | Parses `data-chart-spec` JSON → transforms to Chart.js config with app-themed palette |
+
+**Hierarchy chart click-to-scroll:**
+After `mermaid.run()` resolves, `_wireHierarchyClicks(diagramEl)` is called on `.hierarchy-diagram` elements. It walks up to `.ai-message-container`, builds a map of `data-section-title → DOM element`, then attaches click listeners to SVG `.node` elements whose label text matches a section title. On click, `scrollIntoView({behavior:'smooth'})` is called and a brief indigo ring pulse highlights the target card.
+
+**Security note:** Mermaid is initialised with `securityLevel: 'loose'` to allow SVG node click events. Diagram definitions come exclusively from LLM output (not user-typed input), making this acceptable. `textContent` assignment (not `innerHTML`) is used when creating `<div class="mermaid">` elements.
 
 ---
 

@@ -444,6 +444,36 @@
 
 ---
 
+## Rich Artifacts Feature (`feat/rich-artifacts`)
+
+### What was built
+
+| Area | Change |
+|------|--------|
+| **JSON schema** | `hierarchy_diagram` (Mermaid flowchart TD) added at response root. `artifacts` array added to each section (`formula` / `chart` / `diagram`). Both fields are optional with defaults — fully backward-compatible with stored messages. |
+| **Backend normaliser** | `_normalise_sectioned()` in `chat/service.py` and `discuss/service.py` backfills defaults and filters invalid artifact types on every response parse. |
+| **Prompts** | `SYSTEM_PROMPT`, `DISCUSSION_PROMPT`, `LEARN_MORE_PROMPT` updated with `hierarchy_diagram` spec, artifact schema, and guidance on when to include visuals. |
+| **Frontend libraries** | KaTeX v0.16 (math), Mermaid v11 (diagrams/hierarchy), Chart.js v4 (data charts) added via CDN in `base.html`. |
+| **Artifact renderer** | `backend/static/artifacts.js` — shared IIFE module. Idempotent (data-processed guards). Runs on `DOMContentLoaded` + `htmx:afterSettle`. Exposed as `window.initArtifacts(container)` for Alpine lazy-init. |
+| **Main chat template** | `sectioned_message.html` — hierarchy chart zone after intro, `data-section-title` on section cards, `katex-render` on content paragraphs, collapsed artifact toggles with lazy init. |
+| **Wall preview template** | `share_session_preview.html` — identical additions; artifacts render in the preview modal and in imported sessions without any extra work. |
+| **Unit tests** | 15 new tests in `test_chat.py` (parse normalisation + template rendering). 11 new tests in `test_discuss.py` (pure function + pipeline + template). |
+| **E2E mock** | `mock_llm_server.py` `_SECTIONED` updated to include `hierarchy_diagram` + formula artifact on s1 + chart artifact on s2. |
+| **E2E tests** | 8 new browser tests in `TestArtifactsRendering` (`test_knowledge_root.py`): hierarchy wrapper present, formula/chart toggle buttons visible, panels reveal on click, text changes to "Hide", panel collapses on second click, sections without artifacts show no toggles. |
+| **Architecture doc** | Section 3 (tech stack), Section 18 (response format, content shape, rendering layout, artifact renderer) updated. |
+
+### Key architectural decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Path A: artifacts in JSON schema, not LangGraph tool calls | Simpler, no latency added, sufficient for all educational content. Tool-call path reserved for computed/dynamic data (future). |
+| Collapsed by default with lazy init | Reduces cognitive load; avoids Chart.js sizing issues on hidden canvases. |
+| Hierarchy chart: top-down flowchart, section titles only | Matches sequential foundation→advanced ordering; clean map not a cluttered outline. |
+| Click-scroll via DOM traversal (not URL anchors) | Works inside both main chat and wall preview modal's scroll container; no duplicate-ID risk. |
+| `textContent` for Mermaid, `data-latex` attr for KaTeX, `data-chart-spec` attr for Chart.js | Prevents XSS from LLM-generated definitions flowing through `innerHTML`. |
+
+---
+
 ## Notes & Decisions Log
 
 | Date | Decision | Reason |
@@ -453,4 +483,5 @@
 | 2026-05-04 | Phase 6 added: News tabs (AI/Programming/Political), Discuss button, sectioned AI responses, Learn More sub-threads, knowledge tree, hierarchical MCQ with relearn | New product requirement |
 | 2026-05-05 | Frontend rewritten from React/Vite/TypeScript SPA to Flask SSR (Jinja2 + HTMX + Alpine.js). Auth changed from JWT to Flask-Session + Redis. `frontend/` directory and its Dockerfile removed. Makefile added to replace package.json scripts. | VirtualBox shared folder (vboxsf) cannot create symlinks, breaking npm install. SSR eliminates all Node.js/npm toolchain requirements. Python-only stack is simpler to operate. |
 | 2026-05-06 | Added enterprise architecture layers: `backend/domain/` (frozen dataclasses), `backend/repositories/` (all SQL encapsulated, returns domain objects), `backend/api/auth/schemas.py` (Pydantic v2 request validation). Service functions now call `user_repo` and return `User` domain objects. | Flask best practice for business-grade apps: clean separation of HTTP boundary (schemas), business logic (services), data access (repositories), and domain models. Prevents raw dicts leaking across layers and makes tests mock-friendly. |
+| 2026-05-15 | Rich artifacts added to sectioned responses (`feat/rich-artifacts`): hierarchy chart (Mermaid), formulas (KaTeX), data charts (Chart.js), diagrams (Mermaid). Path A chosen (JSON schema extension, not LangGraph tool calls). | Provides richer educational explanations without adding latency or infrastructure. Artifacts render in all three surfaces (main chat, wall preview, imported sessions) because message JSON is stored as-is. |
 | — | _(add as decisions are made during implementation)_ | — |

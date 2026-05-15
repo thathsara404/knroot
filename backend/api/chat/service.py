@@ -21,6 +21,20 @@ def _is_new_session(compiled, config: dict) -> bool:
     return len(snapshot.values.get("messages", [])) == 0
 
 
+_ALLOWED_ARTIFACT_TYPES = {"formula", "chart", "diagram"}
+
+
+def _normalise_sectioned(data: dict) -> None:
+    """Ensure new optional fields exist and artifact types are valid."""
+    data.setdefault("hierarchy_diagram", "")
+    for section in data.get("sections", []):
+        raw = section.get("artifacts", [])
+        section["artifacts"] = [
+            a for a in raw
+            if isinstance(a, dict) and a.get("type") in _ALLOWED_ARTIFACT_TYPES
+        ]
+
+
 def _parse_llm_response(text: str) -> tuple[object, str]:
     """Parse LLM response text into (response_value, response_type).
 
@@ -43,6 +57,7 @@ def _parse_llm_response(text: str) -> tuple[object, str]:
     if not isinstance(data, dict):
         return text, "plain"
     if data.get("type") == "sectioned" and isinstance(data.get("sections"), list):
+        _normalise_sectioned(data)
         return data, "sectioned"
     if data.get("type") == "plain" and isinstance(data.get("text"), str):
         return data["text"], "plain"

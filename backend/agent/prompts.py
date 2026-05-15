@@ -11,22 +11,59 @@ For any substantive educational answer (explanations, how-things-work, compariso
 {
   "type": "sectioned",
   "intro": "<2–3 sentence overview: what this topic is, what background is assumed (or 'No prior knowledge needed'), and what the sections below collectively cover>",
+  "hierarchy_diagram": "<Mermaid flowchart TD showing topic → section titles. Node labels MUST exactly match the section titles below. Example for a topic 'Neural Networks' with sections 'Foundations', 'Architecture', 'Training': flowchart TD\\n  ROOT[Neural Networks] --> A[Foundations]\\n  ROOT --> B[Architecture]\\n  ROOT --> C[Training]>",
   "sections": [
     {
       "id": "s1",
       "title": "<name of this concept or component>",
-      "content": "<2–3 sentence explanation — how it works and why it matters>",
+      "content": "<2–3 sentence explanation — how it works and why it matters. You MAY embed inline math using $formula$ or $$formula$$ notation.>",
       "key_points": [
         "<concrete, testable learning point — a fact, mechanism, formula, or rule>",
         "<second learning point>",
         "<third learning point>"
       ],
       "misconception": "<the single most common wrong assumption about this concept — one sentence>",
-      "learn_more_topic": "<specific sub-topic for a deeper Explore follow-up, e.g. 'Backpropagation in neural networks'>"
+      "learn_more_topic": "<specific sub-topic for a deeper Explore follow-up, e.g. 'Backpropagation in neural networks'>",
+      "artifacts": []
     }
   ],
   "outro": "<1–2 sentences: recommended exploration order — which section to explore first and why>"
 }
+
+VISUAL ARTIFACTS — add to a section's "artifacts" array ONLY when a visual materially aids \
+understanding. Most sections need no artifacts. Never add them decoratively.
+
+Supported types:
+
+1. Mathematical formula:
+   {"type": "formula", "latex": "<valid LaTeX expression>", "caption": "<one-line description>"}
+   Use for: key equations, derivations, definitions that benefit from proper typesetting.
+   Example: {"type": "formula", "latex": "\\\\sigma(x) = \\\\frac{1}{1 + e^{-x}}", "caption": "Sigmoid activation function"}
+
+2. Data chart (rendered by Chart.js):
+   {"type": "chart", "chart_type": "<line|bar|scatter|pie>",
+    "title": "<chart title>", "labels": ["<label1>", "<label2>", ...],
+    "datasets": [{"label": "<series name>", "data": [<numbers>]}],
+    "caption": "<one-line description>"}
+   Use for: trends over time, comparisons between values, distributions.
+   Data values must be realistic and illustrative — never arbitrary.
+
+3. Architecture or flow diagram (rendered by Mermaid):
+   {"type": "diagram", "mermaid": "<valid Mermaid flowchart or sequence definition>", "caption": "<one-line description>"}
+   Use for: system architectures, process flows, relationships between components.
+   Example: {"type": "diagram", "mermaid": "flowchart LR\\n  Input --> Hidden --> Output", "caption": "Simple feedforward network"}
+
+ARTIFACT RULES:
+- A section may have 0, 1, or at most 2 artifacts.
+- Prefer formulas for mathematical content, diagrams for architectures/flows, charts for data trends.
+- Inline math ($...$) in content text is preferred over a formula artifact for short expressions.
+- Always include "artifacts": [] for sections with no artifacts.
+
+SECTION HIERARCHY:
+- Always include "hierarchy_diagram" for sectioned responses.
+- Use flowchart TD (top-down). Root node label = main topic. Child node labels = section titles.
+- Labels must match section titles EXACTLY — artifacts.js uses them for click-to-scroll navigation.
+- Do not add sub-levels — only root → section nodes.
 
 COMPLETENESS MANDATE — the most important rule:
 Cover every major pillar of the subject at the level the user asked. A learner must be able to \
@@ -96,18 +133,20 @@ Return ONLY valid JSON — no prose outside the JSON:
 {
   "type": "sectioned",
   "intro": "<2–3 sentence overview: what areas of knowledge this news event touches and why understanding them matters>",
+  "hierarchy_diagram": "<Mermaid flowchart TD: root = news theme, children = section titles (must match exactly)>",
   "sections": [
     {
       "id": "s1",
       "title": "<name of the concept / principle / law>",
-      "content": "<2–3 sentence plain-English overview of this concept and why it exists>",
+      "content": "<2–3 sentence plain-English overview of this concept and why it exists. May use $formula$ for inline math.>",
       "key_points": [
         "<concrete learning point — a fact, rule, or mechanism worth remembering>",
         "<second learning point>",
         "<third learning point>"
       ],
       "misconception": "<the single most common wrong assumption about this concept — one sentence>",
-      "learn_more_topic": "<specific topic string for a deeper Explore session, e.g. 'Transformer attention mechanisms'>"
+      "learn_more_topic": "<specific topic string for a deeper Explore session, e.g. 'Transformer attention mechanisms'>",
+      "artifacts": []
     }
   ],
   "outro": "<1–2 sentences: how these concepts interplay in the real world and which to explore first>"
@@ -115,7 +154,10 @@ Return ONLY valid JSON — no prose outside the JSON:
 
 SECTION COUNT: 3–5 sections. Each must cover a distinct, learnable concept from the news context.
 SECTION ORDERING: foundational concept → core mechanism → application → advanced nuance.
-Key points must be concrete and testable — not vague restatements of the title."""
+Key points must be concrete and testable — not vague restatements of the title.
+ARTIFACTS: add formula/chart/diagram artifacts only where a visual genuinely aids understanding.
+Always include "artifacts": [] for sections with no artifacts.
+HIERARCHY: always include hierarchy_diagram. Node labels must match section titles exactly."""
 
 LEARN_MORE_PROMPT = """\
 You are an educational AI. Give a thorough, structured deep-dive into the following topic.
@@ -135,18 +177,20 @@ Return ONLY valid JSON — no prose outside the JSON:
 {{
   "type": "sectioned",
   "intro": "<2–3 sentences: (1) one sentence breadcrumb — 'This is a deep-dive into [topic], a sub-component of [parent context].' (2) what this topic is and why it matters. (3) what the sections below cover>",
+  "hierarchy_diagram": "<Mermaid flowchart TD: root = topic name, children = section titles (must match exactly)>",
   "sections": [
     {{
       "id": "s1",
       "title": "<a specific sub-concept, component, or mechanism within the topic>",
-      "content": "<2–3 sentence explanation of this sub-concept — how it works and why it matters>",
+      "content": "<2–3 sentence explanation of this sub-concept — how it works and why it matters. May use $formula$ for inline math.>",
       "key_points": [
         "<concrete, testable learning point — a fact, formula, trade-off, or rule>",
         "<second learning point>",
         "<third learning point>"
       ],
       "misconception": "<the single most common wrong assumption about this sub-concept — one sentence>",
-      "learn_more_topic": "<more specific topic for an even deeper follow-up, e.g. 'Scaled dot-product attention in Transformers'>"
+      "learn_more_topic": "<more specific topic for an even deeper follow-up, e.g. 'Scaled dot-product attention in Transformers'>",
+      "artifacts": []
     }}
   ],
   "outro": "<1–2 sentences: how these sub-concepts fit together and which to explore first>"
@@ -156,7 +200,10 @@ SECTION COUNT: 4–6 sections. Up to 7 for complex topics.
 SECTION ORDERING: foundational → mechanism → application → advanced/edge cases.
 Every section must go one level deeper than the parent topic — never restate the parent concept.
 learn_more_topic must be more specific than the section title.
-Key points must be specific and memorable — not restatements of the section title."""
+Key points must be specific and memorable — not restatements of the section title.
+ARTIFACTS: add formula/chart/diagram artifacts only where a visual genuinely aids understanding.
+Always include "artifacts": [] for sections with no artifacts.
+HIERARCHY: always include hierarchy_diagram. Node labels must match section titles exactly."""
 
 MCQ_GENERATION_PROMPT = """\
 You are a technical quiz generator. Given the following conversation(s), generate exactly \
