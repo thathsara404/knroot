@@ -14,7 +14,7 @@ def build_llm_client(temperature: float = 0.7) -> ChatOpenAI:
     return ChatOpenAI(
         model=os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat"),
         api_key=SecretStr(api_key),
-        base_url="https://openrouter.ai/api/v1",
+        base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
         default_headers={
             "HTTP-Referer": os.getenv("APP_URL", "http://localhost:5000"),
             "X-Title": "Knowledge Root",

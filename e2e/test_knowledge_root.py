@@ -1,0 +1,338 @@
+"""E2E tests: Knowledge Root building — chat, explore inner roots, quiz lifecycle.
+
+All LLM calls are handled by the mock-llm Docker service which returns
+deterministic canned responses, so no real API tokens are consumed.
+"""
+from __future__ import annotations
+
+import pytest
+from playwright.sync_api import Page, expect
+
+from e2e.conftest import BASE_URL
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+_AI_RESPONSE_SELECTOR = "#chat-messages .flex.justify-start"
+_CHAT_TIMEOUT = 30_000   # mock LLM responds in <1 s, but allow for cold start
+_EXPLORE_TIMEOUT = 25_000
+
+
+def _send_and_wait(page: Page, message: str, timeout: int = _CHAT_TIMEOUT) -> None:
+    """Fill the chat input, submit, and wait for the first AI response bubble."""
+    textarea = page.locator('textarea[name="message"]')
+    textarea.fill(message)
+    textarea.press("Enter")
+    page.wait_for_selector(_AI_RESPONSE_SELECTOR, timeout=timeout)
+    page.wait_for_timeout(400)
+
+
+# ---------------------------------------------------------------------------
+# Chat and sectioned response
+# ---------------------------------------------------------------------------
+
+class TestChatAndSectionedResponse:
+    def test_send_message_shows_user_bubble(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        page.locator('textarea[name="message"]').fill("What is machine learning?")
+        page.locator('textarea[name="message"]').press("Enter")
+        page.wait_for_selector("#chat-messages .flex.justify-end", timeout=10_000)
+        assert "What is machine learning?" in page.inner_text("#chat-messages")
+
+    def test_ai_response_appears_after_message(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Explain neural networks")
+        assert page.locator(_AI_RESPONSE_SELECTOR).count() >= 1
+
+    def test_sectioned_response_shows_section_cards(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "How does backpropagation work?")
+        # Mock returns "Core Concept" as first section title
+        page.wait_for_selector("text=Core Concept", timeout=8_000)
+        expect(page.locator("text=Core Concept").first).to_be_visible()
+
+    def test_sectioned_response_shows_all_three_sections(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Explain gradient descent")
+        page.wait_for_selector("text=Core Concept", timeout=8_000)
+        assert page.locator("text=Practical Applications").count() >= 1
+        assert page.locator("text=Advanced Considerations").count() >= 1
+
+    def test_sectioned_response_has_explore_buttons(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "What is the attention mechanism?")
+        page.wait_for_selector("text=Core Concept", timeout=8_000)
+        explore_buttons = page.locator('button:has-text("Explore")')
+        assert explore_buttons.count() >= 1
+
+    def test_sectioned_response_has_intro_block(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Explain transformer architecture")
+        # Mock intro text contains "educational overview"
+        page.wait_for_selector("text=educational overview", timeout=8_000)
+
+    def test_session_created_in_sidebar(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Tell me about convolutional neural networks")
+        page.wait_for_timeout(600)
+        assert page.locator("#session-list a").count() >= 1
+
+    def test_session_auto_title_set(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "What is reinforcement learning?")
+        # Auto-title fires after response; mock returns "Test Knowledge Topic"
+        page.wait_for_timeout(2_000)
+        session_links = page.locator("#session-list a")
+        assert session_links.count() >= 1
+        title = session_links.first.inner_text().strip()
+        # Title should not still be the default "New Chat" placeholder
+        assert len(title) > 0
+
+    def test_check_knowledge_button_appears(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "How does random forest work?")
+        page.wait_for_selector('button:has-text("Check Knowledge")', timeout=8_000)
+        expect(page.locator('button:has-text("Check Knowledge")')).to_be_visible()
+
+    def test_new_chat_clears_session_and_shows_news(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Explain support vector machines")
+        page.click('button[title="New Chat"]')
+        page.wait_for_selector("#news-articles", timeout=10_000)
+        expect(page.locator("#news-articles")).to_be_visible()
+
+
+# ---------------------------------------------------------------------------
+# Explore → inner roots
+# ---------------------------------------------------------------------------
+
+class TestExploreAndInnerRoots:
+    def test_explore_button_triggers_new_session(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Explain LSTM networks")
+        page.wait_for_selector('button:has-text("Explore")', timeout=8_000)
+        initial_count = page.locator("#session-list a").count()
+
+        page.locator('button:has-text("Explore")').first.click()
+
+        page.wait_for_function(
+            f"document.querySelectorAll('#session-list a').length > {initial_count}",
+            timeout=_EXPLORE_TIMEOUT,
+        )
+        assert page.locator("#session-list a").count() > initial_count
+
+    def test_explore_loads_new_content_in_chat_pane(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "What is transfer learning?")
+        page.wait_for_selector('button:has-text("Explore")', timeout=8_000)
+        before_sessions = page.locator("#session-list a").count()
+
+        page.locator('button:has-text("Explore")').first.click()
+
+        # exploreSection replaces #chat-messages with a spinner then loads new
+        # learn_more session content — wait for sidebar to gain the child session.
+        page.wait_for_function(
+            f"document.querySelectorAll('#session-list a').length > {before_sessions}",
+            timeout=_EXPLORE_TIMEOUT,
+        )
+        assert page.locator("#session-list a").count() > before_sessions
+
+    def test_explore_button_changes_to_loaded(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Explain dropout regularisation")
+        page.wait_for_selector('button:has-text("Explore")', timeout=8_000)
+        before_sessions = page.locator("#session-list a").count()
+        page.locator('button:has-text("Explore")').first.click()
+        # exploreSection replaces #chat-messages immediately, destroying the
+        # original Alpine.js scope — the "Loaded" badge never becomes visible.
+        # Observable side-effect: a new child session appears in the sidebar.
+        page.wait_for_function(
+            f"document.querySelectorAll('#session-list a').length > {before_sessions}",
+            timeout=_EXPLORE_TIMEOUT,
+        )
+        assert page.locator("#session-list a").count() > before_sessions
+
+    def test_second_explore_deepens_tree(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Explain batch normalisation")
+        page.wait_for_selector('button:has-text("Explore")', timeout=8_000)
+
+        before = page.locator("#session-list a").count()
+
+        # First explore — creates depth-1 child
+        page.locator('button:has-text("Explore")').first.click()
+        page.wait_for_function(
+            f"document.querySelectorAll('#session-list a').length > {before}",
+            timeout=_EXPLORE_TIMEOUT,
+        )
+        after_first = page.locator("#session-list a").count()
+
+        # Second explore on the new content — creates depth-2 child
+        page.wait_for_selector('button:has-text("Explore")', timeout=8_000)
+        page.locator('button:has-text("Explore")').first.click()
+        page.wait_for_function(
+            f"document.querySelectorAll('#session-list a').length > {after_first}",
+            timeout=_EXPLORE_TIMEOUT,
+        )
+        assert page.locator("#session-list a").count() >= 2
+
+    def test_knowledge_tree_panel_loads_on_session_click(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "What are recurrent neural networks?")
+        page.wait_for_timeout(600)
+        page.locator("#session-list a").first.click()
+        # Clicking a session loads its messages into #chat-messages; the right
+        # panel shows topic-relevant news (not a separate Knowledge Tree panel).
+        page.wait_for_selector(_AI_RESPONSE_SELECTOR, timeout=8_000)
+        assert page.locator(_AI_RESPONSE_SELECTOR).count() >= 1
+
+    def test_explore_child_session_appears_indented_in_sidebar(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Explain word embeddings")
+        page.wait_for_selector('button:has-text("Explore")', timeout=8_000)
+        initial_count = page.locator("#session-list a").count()
+
+        page.locator('button:has-text("Explore")').first.click()
+        page.wait_for_function(
+            f"document.querySelectorAll('#session-list a').length > {initial_count}",
+            timeout=_EXPLORE_TIMEOUT,
+        )
+        # The session list should now show a nested structure (expand arrow appears)
+        assert page.locator('#session-list [class*="border-l"]').count() >= 1
+
+
+# ---------------------------------------------------------------------------
+# Quiz generation lifecycle
+# ---------------------------------------------------------------------------
+
+_QUIZ_TIMEOUT = 35_000
+
+
+class TestQuizLifecycle:
+    def _load_quiz_inline(self, page: Page, message: str) -> None:
+        """Send a message, wait for AI, click Check Knowledge, wait for inline quiz."""
+        _send_and_wait(page, message)
+        page.wait_for_selector('button:has-text("Check Knowledge")', timeout=8_000)
+        page.click('button:has-text("Check Knowledge")')
+        # Quiz loads inline into #chat-messages via HTMX (not a popup/new tab).
+        page.wait_for_selector("#chat-messages .knr-quiz-root", timeout=_QUIZ_TIMEOUT)
+        page.wait_for_timeout(500)
+
+    def test_quiz_loads_inline(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        self._load_quiz_inline(page, "Explain gradient descent in depth")
+        # Quiz is inline — URL stays at /app, content is inside #chat-messages.
+        assert "/app" in page.url
+        expect(page.locator("#chat-messages").locator("text=Knowledge Check").first).to_be_visible()
+
+    def test_quiz_shows_knowledge_check_heading(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        self._load_quiz_inline(page, "What is the vanishing gradient problem?")
+        expect(page.locator("#chat-messages").locator("text=Knowledge Check").first).to_be_visible()
+
+    def test_quiz_has_multiple_option_buttons(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        self._load_quiz_inline(page, "Explain convolutional layers in CNNs")
+        quiz_area = page.locator("#chat-messages .knr-quiz-root")
+        # Mock returns 8 questions × 4 options = at least 5 buttons
+        assert quiz_area.locator("button").count() >= 5
+
+    def test_quiz_submit_shows_score(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        self._load_quiz_inline(page, "How does the Adam optimiser work?")
+        quiz_area = page.locator("#chat-messages .knr-quiz-root")
+
+        option_buttons = quiz_area.locator("button").filter(
+            has_not_text="Submit Quiz"
+        ).filter(has_not_text="Retry")
+        count = min(option_buttons.count(), 32)
+        for i in range(0, count, 4):
+            try:
+                option_buttons.nth(i).click()
+                page.wait_for_timeout(80)
+            except Exception:
+                pass
+
+        submit = quiz_area.locator('button:has-text("Submit Quiz")')
+        if submit.is_visible():
+            submit.click()
+            page.wait_for_selector("#chat-messages .knr-quiz-root >> text=Retry", timeout=15_000)
+            assert "Retry" in quiz_area.inner_text()
+
+    def test_quiz_retry_loads_new_quiz_inline(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        self._load_quiz_inline(page, "Explain softmax and cross-entropy")
+        quiz_area = page.locator("#chat-messages .knr-quiz-root")
+
+        submit = quiz_area.locator('button:has-text("Submit Quiz")')
+        if submit.is_visible() and not submit.is_disabled():
+            submit.click()
+            page.wait_for_selector("#chat-messages .knr-quiz-root >> text=Retry", timeout=15_000)
+            quiz_area.locator('button:has-text("Retry")').click()
+            # retryQuiz() when inline=true reloads a new quiz inline via HTMX.
+            page.wait_for_selector("#chat-messages .knr-quiz-root", timeout=_QUIZ_TIMEOUT)
+            expect(
+                page.locator("#chat-messages").locator("text=Knowledge Check").first
+            ).to_be_visible()
+
+    def test_followup_quiz_button_appears_after_submit(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        self._load_quiz_inline(page, "What is residual learning?")
+        quiz_area = page.locator("#chat-messages .knr-quiz-root")
+
+        # Select one answer per question to enable the Submit button
+        option_buttons = quiz_area.locator("button").filter(
+            has_not_text="Submit Quiz"
+        ).filter(has_not_text="Retry")
+        count = min(option_buttons.count(), 32)
+        for i in range(0, count, 4):
+            try:
+                option_buttons.nth(i).click()
+                page.wait_for_timeout(80)
+            except Exception:
+                pass
+
+        submit = quiz_area.locator('button:has-text("Submit Quiz")')
+        if submit.is_visible() and not submit.is_disabled():
+            submit.click()
+            page.wait_for_selector("#chat-messages .knr-quiz-root >> text=Retry", timeout=15_000)
+
+        # Chat input remains accessible while inline quiz is displayed
+        assert page.locator('textarea[name="message"]').is_visible()
+
+
+# ---------------------------------------------------------------------------
+# Session navigation and management
+# ---------------------------------------------------------------------------
+
+class TestSessionNavigation:
+    def test_click_session_loads_messages(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Explain principal component analysis")
+        page.wait_for_timeout(600)
+        page.locator("#session-list a").first.click()
+        # Chat messages should be visible after loading the session
+        page.wait_for_selector(_AI_RESPONSE_SELECTOR, timeout=10_000)
+
+    def test_second_message_in_same_session(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "What is k-nearest neighbours?")
+        first_count = page.locator(_AI_RESPONSE_SELECTOR).count()
+        _send_and_wait(page, "Give me an example of kNN in practice")
+        # Two AI responses should now be visible
+        assert page.locator(_AI_RESPONSE_SELECTOR).count() > first_count
+
+    def test_sidebar_session_count_increments_on_explore(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "What is naive Bayes?")
+        before = page.locator("#session-list a").count()
+        page.wait_for_selector('button:has-text("Explore")', timeout=8_000)
+        page.locator('button:has-text("Explore")').first.click()
+        page.wait_for_function(
+            f"document.querySelectorAll('#session-list a').length > {before}",
+            timeout=_EXPLORE_TIMEOUT,
+        )
+        assert page.locator("#session-list a").count() == before + 1

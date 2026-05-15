@@ -234,3 +234,63 @@ def test_rate_limit_on_login(client):
     for _ in range(11):
         resp = client.post('/auth/login', json={'identifier': 'x', 'password': 'y'})
     assert resp.status_code == 429
+
+
+# ── auth/schemas.py direct validation (covers lines 26, 28, 57, 59, 61) ──────
+
+def test_register_schema_empty_first_name_raises_validation_error():
+    from pydantic import ValidationError
+    from backend.api.auth.schemas import RegisterRequest
+    with pytest.raises(ValidationError):
+        RegisterRequest(
+            first_name='',
+            last_name='Valid',
+            username='testuser',
+            email='test@example.com',
+            password='SecurePass1',
+            confirm_password='SecurePass1',
+        )
+
+
+def test_register_schema_empty_last_name_raises_validation_error():
+    from pydantic import ValidationError
+    from backend.api.auth.schemas import RegisterRequest
+    with pytest.raises(ValidationError):
+        RegisterRequest(
+            first_name='Valid',
+            last_name='',
+            username='testuser',
+            email='test@example.com',
+            password='SecurePass1',
+            confirm_password='SecurePass1',
+        )
+
+
+def test_login_schema_empty_identifier_raises_validation_error():
+    from pydantic import ValidationError
+    from backend.api.auth.schemas import LoginRequest
+    with pytest.raises(ValidationError):
+        LoginRequest(identifier='', password='securepass')
+
+
+def test_login_schema_empty_password_raises_validation_error():
+    from pydantic import ValidationError
+    from backend.api.auth.schemas import LoginRequest
+    with pytest.raises(ValidationError):
+        LoginRequest(identifier='user', password='')
+
+
+def test_login_schema_both_empty_raises_validation_error():
+    from pydantic import ValidationError
+    from backend.api.auth.schemas import LoginRequest
+    with pytest.raises(ValidationError):
+        LoginRequest(identifier='', password='')
+
+
+# ── backend/core/llm.py: build_llm_client with no API key (line 12) ──────────
+
+def test_build_llm_client_raises_when_api_key_missing(monkeypatch):
+    monkeypatch.delenv('OPENROUTER_API_KEY', raising=False)
+    from backend.core.llm import build_llm_client
+    with pytest.raises(RuntimeError, match='OPENROUTER_API_KEY'):
+        build_llm_client()

@@ -36,7 +36,12 @@
       "Read(//c/Users/MSI/AppData/Roaming/Claude/**)",
       "Bash(Remove-Item -Path \"D:\\\\code-setup\\\\ai-agent\\\\tests\\\\js\" -Recurse -Force)",
       "Bash(Remove-Item -Path \"D:\\\\code-setup\\\\ai-agent\\\\package.json\" -Force)",
-      "Bash(Remove-Item -Path \"D:\\\\code-setup\\\\ai-agent\\\\jest.config.js\" -Force)"
+      "Bash(Remove-Item -Path \"D:\\\\code-setup\\\\ai-agent\\\\jest.config.js\" -Force)",
+      "Bash(Get-ChildItem -Path \"D:\\\\code-setup\\\\ai-agent\" -Force)",
+      "Bash(Select-Object Name, PSIsContainer)",
+      "Bash(xxd \"D:\\\\code-setup\\\\ai-agent\\\\e2etestresult.txt\")",
+      "Bash(grep -n \"text=Knowledge Check\\\\|knr-quiz-root\\\\|knr-confirm-ok\\\\|wait_for_timeout\\(1_500\\)\\\\|try:\\\\|except Exception:\\\\|pass$\" D:/code-setup/ai-agent/e2e/test_wall.py)",
+      "Bash(grep -n \"wait_for_timeout\\(500\\)\\\\|wait_for_timeout\\(800\\)\\\\|try:\\\\|except Exception:\\\\|pass$\" D:/code-setup/ai-agent/e2e/test_wall.py)"
     ]
   }
 }

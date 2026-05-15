@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 # Per-user presence keys: sse:online:<user_id>  (value "1", TTL = PRESENCE_TTL seconds)
 # Renewed every KEEPALIVE_INTERVAL seconds by the SSE generator's idle tick.
 # Expires automatically if the connection is dropped without a clean disconnect.
-PRESENCE_TTL = 30          # seconds until a presence key expires
-KEEPALIVE_INTERVAL = 20.0  # seconds between idle keepalive ticks in the generator
+PRESENCE_TTL = 30         # seconds until a presence key expires
+KEEPALIVE_INTERVAL = 3.0  # seconds between idle keepalive ticks in the generator
 
 
 def _channel(user_id: str) -> str:

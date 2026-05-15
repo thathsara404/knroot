@@ -132,3 +132,162 @@ def test_broadcast_event_skips_offline_users(fresh_redis):
     broadcast_event("new-post", {})
 
     assert pubsub.get_message() is None
+
+
+# ── sse.py exception-handler paths ───────────────────────────────────────────
+# Each sse helper swallows exceptions. These tests exercise the except branches
+# (lines 29-30, 37-38, 45-46, 59-60, 76, 80-83 in backend/core/sse.py).
+
+def test_register_user_swallows_redis_error(mocker):
+    mocker.patch("backend.core.sse.get_redis", side_effect=RuntimeError("no redis"))
+    from backend.core.sse import register_user
+    register_user("user-1")  # must not raise
+
+
+def test_renew_user_ttl_swallows_redis_error(mocker):
+    mocker.patch("backend.core.sse.get_redis", side_effect=RuntimeError("no redis"))
+    from backend.core.sse import renew_user_ttl
+    renew_user_ttl("user-1")  # must not raise
+
+
+def test_unregister_user_swallows_redis_error(mocker):
+    mocker.patch("backend.core.sse.get_redis", side_effect=RuntimeError("no redis"))
+    from backend.core.sse import unregister_user
+    unregister_user("user-1")  # must not raise
+
+
+def test_publish_event_swallows_redis_error(mocker):
+    mocker.patch("backend.core.sse.get_redis", side_effect=RuntimeError("no redis"))
+    from backend.core.sse import publish_event
+    publish_event("user-1", "test-event", {"x": 1})  # must not raise
+
+
+def test_broadcast_event_handles_bytes_key(mocker):
+    mock_redis = mocker.MagicMock()
+    mock_redis.scan_iter.return_value = [b"sse:online:user-1"]
+    mock_redis.publish.return_value = None
+    mocker.patch("backend.core.sse.get_redis", return_value=mock_redis)
+
+    from backend.core.sse import broadcast_event
+    broadcast_event("test-event", {"x": 1})
+
+    mock_redis.publish.assert_called_once()
+    call_channel = mock_redis.publish.call_args[0][0]
+    assert "user-1" in call_channel
+
+
+def test_broadcast_event_swallows_inner_publish_error(mocker):
+    mock_redis = mocker.MagicMock()
+    mock_redis.scan_iter.return_value = ["sse:online:user-1"]
+    mock_redis.publish.side_effect = RuntimeError("publish failed")
+    mocker.patch("backend.core.sse.get_redis", return_value=mock_redis)
+
+    from backend.core.sse import broadcast_event
+    broadcast_event("test-event", {})  # must not raise
+
+
+def test_broadcast_event_swallows_scan_error(mocker):
+    mock_redis = mocker.MagicMock()
+    mock_redis.scan_iter.side_effect = RuntimeError("redis scan failed")
+    mocker.patch("backend.core.sse.get_redis", return_value=mock_redis)
+
+    from backend.core.sse import broadcast_event
+    broadcast_event("test-event", {})  # must not raise
+
+
+# ── events/routes.py generate() body ─────────────────────────────────────────
+# The SSE generator is an infinite loop. We capture it via stream_with_context
+# and drive it manually with next() to cover lines 39-64.
+
+def _capture_generator(mocker, authed_client):
+    """Return the generate() closure without consuming it."""
+    captured = []
+
+    def fake_swc(gen):
+        captured.append(gen)
+        def finite():
+            return
+            yield
+        return finite()
+
+    mocker.patch("backend.api.events.routes.stream_with_context", side_effect=fake_swc)
+    mocker.patch("backend.api.events.routes.KEEPALIVE_INTERVAL", 0)
+    authed_client.get("/events/stream")
+    assert captured, "stream_with_context was not called"
+    return captured[0]
+
+
+def test_generate_first_tick_yields_keepalive(authed_client, mocker, fresh_redis):
+    gen = _capture_generator(mocker, authed_client)
+    chunk = next(gen)
+    assert chunk == ": keepalive\n\n"
+
+
+def test_generate_yields_sse_event_on_published_message(authed_client, mocker, fresh_redis):
+    gen = _capture_generator(mocker, authed_client)
+    next(gen)  # consume keepalive so generator is past the first yield
+
+    msg_data = json.dumps({
+        "event": "test-event",
+        "payload": json.dumps({"count": 7}),
+    })
+    fresh_redis.publish("sse:user:user-uuid-1234", msg_data)
+
+    chunk = next(gen)
+    assert "event: test-event" in chunk
+    assert "count" in chunk
+
+
+def test_generate_handles_invalid_message_and_continues(authed_client, mocker, fresh_redis):
+    gen = _capture_generator(mocker, authed_client)
+    next(gen)  # consume first keepalive
+
+    # Publish an invalid JSON message
+    fresh_redis.publish("sse:user:user-uuid-1234", "not valid json at all")
+
+    # Generator should handle the exception internally and yield a keepalive
+    chunk = next(gen)
+    assert chunk == ": keepalive\n\n"
+
+
+def test_generate_finally_block_runs_on_close(authed_client, mocker, fresh_redis):
+    gen = _capture_generator(mocker, authed_client)
+    next(gen)  # run past subscribe + first keepalive
+
+    # Verify presence key was set by register_user inside the generator
+    assert fresh_redis.get("sse:online:user-uuid-1234") == "1"
+
+    # Closing triggers the finally block which calls unregister_user
+    gen.close()
+
+    # After close, presence key should be removed
+    assert fresh_redis.get("sse:online:user-uuid-1234") is None
+
+
+def test_generate_handles_pubsub_cleanup_error(authed_client, mocker, fresh_redis):
+    """Cover lines 62-63: exception in pubsub.unsubscribe() is swallowed."""
+    captured = []
+
+    def fake_swc(gen):
+        captured.append(gen)
+        def finite():
+            return
+            yield
+        return finite()
+
+    mocker.patch("backend.api.events.routes.stream_with_context", side_effect=fake_swc)
+    mocker.patch("backend.api.events.routes.KEEPALIVE_INTERVAL", 0)
+    authed_client.get("/events/stream")
+    gen = captured[0]
+
+    # Mock pubsub that raises on cleanup so we hit the except in the finally block
+    mock_pubsub = mocker.MagicMock()
+    mock_pubsub.get_message.return_value = None
+    mock_pubsub.unsubscribe.side_effect = RuntimeError("cleanup failed")
+    mock_redis = mocker.MagicMock()
+    mock_redis.pubsub.return_value = mock_pubsub
+    mocker.patch("backend.api.events.routes.get_redis", return_value=mock_redis)
+    mocker.patch("backend.core.sse.get_redis", return_value=fresh_redis)
+
+    next(gen)   # start the generator — calls register_user + subscribe + keepalive
+    gen.close() # triggers finally → unsubscribe raises → caught by except (lines 62-63)

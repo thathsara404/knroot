@@ -746,3 +746,656 @@ def test_preview_content_news_discussion_sets_article_link(mocker):
     result = get_session_preview_content("sess-1", "sess-1")
     assert result["article_link"] == "https://example.com/article"
     assert result["article_title"] == "AI Article"
+
+
+# ===========================================================================
+# _parse_message_content — fence exception path (lines 25-26)
+# ===========================================================================
+
+def test_parse_message_content_fence_without_newline_does_not_raise():
+    from backend.api.wall.service import _parse_message_content
+    # "```" with no newline — split("\n", 1)[1] would raise IndexError, caught by except
+    result = _parse_message_content("```")
+    assert result["type"] == "text"
+    assert result["text"] == "```"
+
+
+# ===========================================================================
+# get_user_score — DB-backed function (lines 106-125)
+# ===========================================================================
+
+class TestGetUserScore:
+    def test_returns_all_fields(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value={
+            "score": 150, "upvotes": 20, "downvotes": 5, "share_count": 3,
+        })
+        from backend.api.wall.service import get_user_score
+        result = get_user_score("user-1")
+        assert result["score"] == 150
+        assert result["upvotes"] == 20
+        assert result["downvotes"] == 5
+        assert result["share_count"] == 3
+
+    def test_stars_computed_from_upvotes(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value={
+            "score": 0, "upvotes": 5000, "downvotes": 0, "share_count": 1,
+        })
+        from backend.api.wall.service import get_user_score
+        result = get_user_score("user-1")
+        assert result["stars"] == 1.0  # 5000 upvotes → 1 star
+
+    def test_none_row_returns_zeros(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value=None)
+        from backend.api.wall.service import get_user_score
+        result = get_user_score("user-1")
+        assert result["score"] == 0
+        assert result["upvotes"] == 0
+        assert result["stars"] == 0.0
+
+    def test_null_score_field_coerced_to_zero(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value={
+            "score": None, "upvotes": None, "downvotes": None, "share_count": None,
+        })
+        from backend.api.wall.service import get_user_score
+        result = get_user_score("user-1")
+        assert result["score"] == 0
+
+
+# ===========================================================================
+# delete_share — service function (lines 236-244)
+# ===========================================================================
+
+class TestDeleteShareService:
+    def test_raises_when_share_not_found(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value=None)
+        from backend.api.wall.service import delete_share
+        with pytest.raises(ValueError, match="not found"):
+            delete_share("user-1", "share-1")
+
+    def test_raises_when_not_owner(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value={"user_id": "other-user"})
+        from backend.api.wall.service import delete_share
+        with pytest.raises(ValueError, match="authorised"):
+            delete_share("user-1", "share-1")
+
+    def test_deletes_share_when_owner(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value={"user_id": "user-1"})
+        mock_execute = mocker.patch("backend.api.wall.service.execute")
+        from backend.api.wall.service import delete_share
+        delete_share("user-1", "share-1")
+        mock_execute.assert_called_once()
+
+
+# ===========================================================================
+# _serialize_share — pure helper (lines 253-259)
+# ===========================================================================
+
+class TestSerializeShare:
+    def test_stringifies_uuid_fields(self):
+        import uuid
+        from backend.api.wall.service import _serialize_share
+        share_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+        row = {"id": share_id, "user_id": "u1", "session_id": None, "source_share_id": None}
+        result = _serialize_share(row)
+        assert result["id"] == "12345678-1234-5678-1234-567812345678"
+
+    def test_stringifies_created_at_datetime(self):
+        from datetime import datetime, timezone
+        from backend.api.wall.service import _serialize_share
+        dt = datetime(2026, 5, 15, 12, 0, 0, tzinfo=timezone.utc)
+        row = {"id": "s1", "user_id": "u1", "created_at": dt, "session_id": None, "source_share_id": None}
+        result = _serialize_share(row)
+        assert "2026-05-15" in result["created_at"]
+
+    def test_none_uuid_fields_stay_none(self):
+        from backend.api.wall.service import _serialize_share
+        row = {"id": "s1", "user_id": "u1", "session_id": None, "source_share_id": None}
+        result = _serialize_share(row)
+        assert result["session_id"] is None
+        assert result["source_share_id"] is None
+
+    def test_returns_copy_not_mutating_original(self):
+        from backend.api.wall.service import _serialize_share
+        original_row = {"id": "s1", "user_id": "u1", "session_id": None, "source_share_id": None}
+        row_copy = dict(original_row)
+        _serialize_share(original_row)
+        assert original_row == row_copy
+
+
+# ===========================================================================
+# wall/routes.py — invalid offset falls back to 0 (lines 20-21)
+# ===========================================================================
+
+def test_public_wall_partial_invalid_offset_defaults_to_zero(authed_client, mocker):
+    mock = mocker.patch(f"{WALL_SVC}.list_public_shares", return_value=[])
+    authed_client.get("/wall/public/partial?offset=notanumber")
+    mock.assert_called_once_with("user-uuid-1234", limit=20, offset=0)
+
+
+# ===========================================================================
+# create_share service (lines 145-231)
+# ===========================================================================
+
+class TestCreateShareService:
+    _DT = __import__("datetime").datetime(2026, 1, 1,
+                      tzinfo=__import__("datetime").timezone.utc)
+    _BASE_ROW = {
+        "id": "share-1", "user_id": "user-1", "session_id": "sess-1",
+        "visibility": "public", "description": "desc", "source_share_id": None,
+        "created_at": _DT,
+    }
+
+    def test_session_not_owned_raises(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value=None)
+        from backend.api.wall.service import create_share
+        with pytest.raises(ValueError, match="Session not found"):
+            create_share("user-1", "sess-1", "public", "desc")
+
+    def test_already_shared_raises(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[
+            {"id": "sess-1"},           # owns session
+            {"id": "existing-share"},   # already shared
+        ])
+        from backend.api.wall.service import create_share
+        with pytest.raises(ValueError, match="already been shared"):
+            create_share("user-1", "sess-1", "public", "desc")
+
+    def test_invalid_visibility_normalised_to_public(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[
+            {"id": "sess-1"}, None,
+            {"imported_from_share_id": None},
+            {"full_name": "Alice", "username": "alice"},
+        ])
+        mock_er = mocker.patch("backend.api.wall.service.execute_returning", return_value=self._BASE_ROW)
+        mocker.patch("backend.api.wall.service.broadcast_event")
+        from backend.api.wall.service import create_share
+        create_share("user-1", "sess-1", "secret", "desc")
+        call_args = mock_er.call_args[0][1]
+        assert "public" in call_args  # visibility normalised
+
+    def test_happy_path_no_reshare(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[
+            {"id": "sess-1"},                        # owns session
+            None,                                    # not already shared
+            {"imported_from_share_id": None},        # no reshare
+            {"full_name": "Alice", "username": "alice"},  # author
+        ])
+        mocker.patch("backend.api.wall.service.execute_returning", return_value=self._BASE_ROW)
+        mocker.patch("backend.api.wall.service.broadcast_event")
+        from backend.api.wall.service import create_share
+        result = create_share("user-1", "sess-1", "public", "desc")
+        assert result["id"] == "share-1"
+
+    def test_reshare_path_with_bonus_events(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[
+            {"id": "sess-1"},                        # owns
+            None,                                    # not shared yet
+            {"imported_from_share_id": "src-share"}, # is a reshare
+            {"user_id": "other-user", "upvotes": 10, "downvotes": 0},  # src data
+            None,                                    # no existing bonus
+            {"full_name": "Alice", "username": "alice"},               # author
+        ])
+        row = {**self._BASE_ROW, "source_share_id": "src-share"}
+        mocker.patch("backend.api.wall.service.execute_returning", return_value=row)
+        mock_exec = mocker.patch("backend.api.wall.service.execute")
+        mocker.patch("backend.api.wall.service.broadcast_event")
+        from backend.api.wall.service import create_share
+        result = create_share("user-1", "sess-1", "public", "desc")
+        assert result["id"] == "share-1"
+        mock_exec.assert_called()  # score event was persisted
+
+
+# ===========================================================================
+# _fetch_session_tree (lines 428-448)
+# ===========================================================================
+
+class TestFetchSessionTree:
+    def test_returns_formatted_list(self, mocker):
+        mocker.patch("backend.api.wall.service.query", return_value=[
+            {"id": "s1", "title": "Root", "session_type": "regular",
+             "depth_level": 0, "parent_session_id": None, "topic": None},
+            {"id": "s2", "title": "Child", "session_type": "quiz",
+             "depth_level": 1, "parent_session_id": "s1", "topic": "ML"},
+        ])
+        from backend.api.wall.service import _fetch_session_tree
+        result = _fetch_session_tree("s1")
+        assert len(result) == 2
+        assert result[0]["id"] == "s1"
+        assert result[1]["depth_level"] == 1
+        assert result[1]["parent_session_id"] == "s1"
+
+    def test_empty_query_returns_empty_list(self, mocker):
+        mocker.patch("backend.api.wall.service.query", return_value=[])
+        from backend.api.wall.service import _fetch_session_tree
+        assert _fetch_session_tree("s1") == []
+
+
+# ===========================================================================
+# list_public_shares / list_private_shares (lines 455-503)
+# ===========================================================================
+
+def test_list_public_shares_returns_hydrated_rows(mocker):
+    mocker.patch("backend.api.wall.service.query", return_value=[{"id": "share-1"}])
+    mocker.patch("backend.api.wall.service._hydrate_share_rows",
+                 return_value=[{"id": "share-1", "hydrated": True}])
+    from backend.api.wall.service import list_public_shares
+    result = list_public_shares("user-1", limit=10, offset=5)
+    assert result == [{"id": "share-1", "hydrated": True}]
+
+
+def test_list_public_shares_empty_list(mocker):
+    mocker.patch("backend.api.wall.service.query", return_value=[])
+    mocker.patch("backend.api.wall.service._hydrate_share_rows", return_value=[])
+    from backend.api.wall.service import list_public_shares
+    assert list_public_shares("user-1") == []
+
+
+def test_list_private_shares_returns_hydrated_rows(mocker):
+    mocker.patch("backend.api.wall.service.query", return_value=[{"id": "share-2"}])
+    mocker.patch("backend.api.wall.service._hydrate_share_rows",
+                 return_value=[{"id": "share-2"}])
+    from backend.api.wall.service import list_private_shares
+    result = list_private_shares("user-1")
+    assert len(result) == 1
+
+
+# ===========================================================================
+# cast_vote (lines 517-565)
+# ===========================================================================
+
+class TestCastVoteService:
+    def _score(self):
+        return {"score": 0, "stars": 0.0, "upvotes": 0, "downvotes": 0, "share_count": 0}
+
+    def test_share_not_found_raises(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value=None)
+        from backend.api.wall.service import cast_vote
+        with pytest.raises(ValueError, match="Share not found"):
+            cast_vote("user-1", "share-1", 1)
+
+    def test_upvote_returns_correct_dict(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[
+            {"user_id": "author"},
+            {"upvotes": 1, "downvotes": 0},
+        ])
+        mocker.patch("backend.api.wall.service.execute")
+        mocker.patch("backend.api.wall.service.broadcast_event")
+        mocker.patch("backend.api.wall.service.get_user_score", return_value=self._score())
+        from backend.api.wall.service import cast_vote
+        result = cast_vote("user-1", "share-1", 1)
+        assert result["upvotes"] == 1
+        assert result["my_vote"] == 1
+
+    def test_downvote_returns_correct_dict(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[
+            {"user_id": "author"},
+            {"upvotes": 0, "downvotes": 1},
+        ])
+        mocker.patch("backend.api.wall.service.execute")
+        mocker.patch("backend.api.wall.service.broadcast_event")
+        mocker.patch("backend.api.wall.service.get_user_score", return_value=self._score())
+        from backend.api.wall.service import cast_vote
+        result = cast_vote("user-1", "share-1", -1)
+        assert result["my_vote"] == -1
+
+    def test_remove_vote_executes_delete(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[
+            {"user_id": "author"},
+            {"upvotes": 0, "downvotes": 0},
+        ])
+        mock_exec = mocker.patch("backend.api.wall.service.execute")
+        mocker.patch("backend.api.wall.service.broadcast_event")
+        mocker.patch("backend.api.wall.service.get_user_score", return_value=self._score())
+        from backend.api.wall.service import cast_vote
+        cast_vote("user-1", "share-1", 0)
+        mock_exec.assert_called()
+
+
+# ===========================================================================
+# _serialize_comment (lines 579-587)
+# ===========================================================================
+
+class TestSerializeComment:
+    def test_formats_all_fields(self):
+        from datetime import datetime, timezone
+        from backend.api.wall.service import _serialize_comment
+        dt = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        row = {"id": "c1", "share_id": "s1", "user_id": "u1",
+               "full_name": "Alice", "content": "Hi!", "created_at": dt,
+               "parent_comment_id": None}
+        result = _serialize_comment(row)
+        assert result["id"] == "c1"
+        assert result["author_name"] == "Alice"
+        assert "2026" in result["created_at"]
+        assert result["parent_comment_id"] is None
+
+    def test_none_created_at_returns_none(self):
+        from backend.api.wall.service import _serialize_comment
+        row = {"id": "c1", "share_id": "s1", "user_id": "u1",
+               "author_name": "Bob", "content": "Hi!", "created_at": None,
+               "parent_comment_id": "p1"}
+        result = _serialize_comment(row)
+        assert result["created_at"] is None
+        assert result["parent_comment_id"] == "p1"
+
+
+# ===========================================================================
+# add_comment (lines 597-630)
+# ===========================================================================
+
+class TestAddCommentService:
+    _DT = __import__("datetime").datetime(2026, 1, 1,
+                      tzinfo=__import__("datetime").timezone.utc)
+
+    def test_empty_content_raises(self, mocker):
+        from backend.api.wall.service import add_comment
+        with pytest.raises(ValueError, match="content required"):
+            add_comment("user-1", "share-1", "")
+
+    def test_whitespace_content_raises(self, mocker):
+        from backend.api.wall.service import add_comment
+        with pytest.raises(ValueError, match="content required"):
+            add_comment("user-1", "share-1", "   ")
+
+    def test_share_not_found_raises(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value=None)
+        from backend.api.wall.service import add_comment
+        with pytest.raises(ValueError, match="Share not found"):
+            add_comment("user-1", "share-1", "Hello")
+
+    def test_invalid_parent_raises(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[
+            {"id": "share-1"},   # share exists
+            None,                # parent not found
+        ])
+        from backend.api.wall.service import add_comment
+        with pytest.raises(ValueError, match="Invalid parent comment"):
+            add_comment("user-1", "share-1", "Reply", parent_comment_id="bad")
+
+    def test_success_returns_comment_dict(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[
+            {"id": "share-1"},
+            {"full_name": "Alice"},
+        ])
+        mocker.patch("backend.api.wall.service.execute_returning", return_value={
+            "id": "c1", "share_id": "share-1", "user_id": "user-1",
+            "content": "Hello!", "created_at": self._DT, "parent_comment_id": None,
+        })
+        mocker.patch("backend.api.wall.service.broadcast_event")
+        from backend.api.wall.service import add_comment
+        result = add_comment("user-1", "share-1", "Hello!")
+        assert result["id"] == "c1"
+        assert result["content"] == "Hello!"
+
+
+# ===========================================================================
+# list_comments (lines 634-645)
+# ===========================================================================
+
+def test_list_comments_service_returns_serialized(mocker):
+    from datetime import datetime, timezone
+    dt = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    mocker.patch("backend.api.wall.service.query", return_value=[
+        {"id": "c1", "share_id": "s1", "user_id": "u1", "author_name": "Alice",
+         "content": "Hi!", "created_at": dt, "parent_comment_id": None},
+    ])
+    from backend.api.wall.service import list_comments
+    result = list_comments("share-1")
+    assert len(result) == 1
+    assert result[0]["content"] == "Hi!"
+
+
+def test_list_comments_service_empty(mocker):
+    mocker.patch("backend.api.wall.service.query", return_value=[])
+    from backend.api.wall.service import list_comments
+    assert list_comments("share-1") == []
+
+
+# ===========================================================================
+# delete_comment (lines 649-663)
+# ===========================================================================
+
+class TestDeleteCommentService:
+    def test_not_found_raises(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value=None)
+        from backend.api.wall.service import delete_comment
+        with pytest.raises(ValueError, match="not found"):
+            delete_comment("user-1", "comment-1")
+
+    def test_not_owner_raises(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one",
+                     return_value={"user_id": "other", "share_id": "s1"})
+        from backend.api.wall.service import delete_comment
+        with pytest.raises(ValueError, match="authorised"):
+            delete_comment("user-1", "comment-1")
+
+    def test_success_executes_and_broadcasts(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one",
+                     return_value={"user_id": "user-1", "share_id": "s1"})
+        mock_exec = mocker.patch("backend.api.wall.service.execute")
+        mocker.patch("backend.api.wall.service.broadcast_event")
+        from backend.api.wall.service import delete_comment
+        delete_comment("user-1", "comment-1")
+        mock_exec.assert_called()
+
+
+# ===========================================================================
+# save_to_wall / unsave_from_wall (lines 674-694)
+# ===========================================================================
+
+class TestSaveToWall:
+    def test_not_found_raises(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value=None)
+        from backend.api.wall.service import save_to_wall
+        with pytest.raises(ValueError, match="not found"):
+            save_to_wall("user-1", "share-1")
+
+    def test_own_share_raises(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value={"user_id": "user-1"})
+        from backend.api.wall.service import save_to_wall
+        with pytest.raises(ValueError, match="own share"):
+            save_to_wall("user-1", "share-1")
+
+    def test_success_calls_execute(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value={"user_id": "other"})
+        mock_exec = mocker.patch("backend.api.wall.service.execute")
+        from backend.api.wall.service import save_to_wall
+        save_to_wall("user-1", "share-1")
+        mock_exec.assert_called()
+
+
+def test_unsave_from_wall_calls_execute(mocker):
+    mock_exec = mocker.patch("backend.api.wall.service.execute")
+    from backend.api.wall.service import unsave_from_wall
+    unsave_from_wall("user-1", "share-1")
+    mock_exec.assert_called()
+
+
+# ===========================================================================
+# follow_user / cancel_follow (lines 706-748)
+# ===========================================================================
+
+class TestFollowUser:
+    def test_self_follow_returns_self_status(self, mocker):
+        from backend.api.wall.service import follow_user
+        assert follow_user("user-1", "user-1")["status"] == "self"
+
+    def test_existing_follow_returns_current_status(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value={"status": "accepted"})
+        from backend.api.wall.service import follow_user
+        assert follow_user("user-1", "user-2")["status"] == "accepted"
+
+    def test_new_follow_request_returns_pending(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[
+            None,
+            {"id": "user-1", "full_name": "Alice", "username": "alice"},
+        ])
+        mocker.patch("backend.api.wall.service.execute")
+        mocker.patch("backend.api.wall.service.publish_event")
+        from backend.api.wall.service import follow_user
+        assert follow_user("user-1", "user-2")["status"] == "pending"
+
+    def test_follow_when_requester_not_found_still_returns_pending(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[None, None])
+        mocker.patch("backend.api.wall.service.execute")
+        mocker.patch("backend.api.wall.service.publish_event")
+        from backend.api.wall.service import follow_user
+        assert follow_user("user-1", "user-2")["status"] == "pending"
+
+
+def test_cancel_follow_calls_execute(mocker):
+    mock_exec = mocker.patch("backend.api.wall.service.execute")
+    from backend.api.wall.service import cancel_follow
+    cancel_follow("user-1", "user-2")
+    mock_exec.assert_called()
+
+
+# ===========================================================================
+# accept_follow_request / reject_follow_request (lines 753-791)
+# ===========================================================================
+
+class TestAcceptFollowRequest:
+    def test_no_pending_request_raises(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value=None)
+        from backend.api.wall.service import accept_follow_request
+        with pytest.raises(ValueError, match="No pending request"):
+            accept_follow_request("user-2", "user-1")
+
+    def test_not_pending_status_raises(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value={"status": "accepted"})
+        from backend.api.wall.service import accept_follow_request
+        with pytest.raises(ValueError, match="not in pending"):
+            accept_follow_request("user-2", "user-1")
+
+    def test_success_sends_notification(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[
+            {"status": "pending"},
+            {"id": "user-2", "full_name": "Bob", "username": "bob"},
+        ])
+        mocker.patch("backend.api.wall.service.execute")
+        mock_publish = mocker.patch("backend.api.wall.service.publish_event")
+        from backend.api.wall.service import accept_follow_request
+        accept_follow_request("user-2", "user-1")
+        mock_publish.assert_called()
+
+
+def test_reject_follow_request_calls_execute(mocker):
+    mock_exec = mocker.patch("backend.api.wall.service.execute")
+    from backend.api.wall.service import reject_follow_request
+    reject_follow_request("user-2", "user-1")
+    mock_exec.assert_called()
+
+
+# ===========================================================================
+# get_pending_requests (lines 796-814)
+# ===========================================================================
+
+def test_get_pending_requests_returns_formatted_list(mocker):
+    from datetime import datetime, timezone
+    dt = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    mocker.patch("backend.api.wall.service.query", return_value=[
+        {"id": "u1", "full_name": "Alice", "username": "alice", "requested_at": dt},
+    ])
+    from backend.api.wall.service import get_pending_requests
+    result = get_pending_requests("user-2")
+    assert len(result) == 1
+    assert result[0]["username"] == "alice"
+    assert "2026" in result[0]["requested_at"]
+
+
+def test_get_pending_requests_none_requested_at(mocker):
+    mocker.patch("backend.api.wall.service.query", return_value=[
+        {"id": "u1", "full_name": "Bob", "username": "bob", "requested_at": None},
+    ])
+    from backend.api.wall.service import get_pending_requests
+    result = get_pending_requests("user-2")
+    assert result[0]["requested_at"] is None
+
+
+# ===========================================================================
+# get_profile (lines 824-867)
+# ===========================================================================
+
+class TestGetProfile:
+    _DT = __import__("datetime").datetime(2026, 1, 1,
+                      tzinfo=__import__("datetime").timezone.utc)
+
+    def test_user_not_found_raises(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value=None)
+        from backend.api.wall.service import get_profile
+        with pytest.raises(ValueError, match="User not found"):
+            get_profile("user-1", "viewer-1")
+
+    def test_returns_full_profile(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[
+            {"id": "u1", "username": "alice", "email": "a@b.com",
+             "full_name": "Alice", "created_at": self._DT},
+            {"cnt": 5},   # follower_count
+            {"cnt": 3},   # following_count
+            {"status": "accepted"},  # is_following
+        ])
+        mocker.patch("backend.api.wall.service.query", return_value=[])
+        mocker.patch("backend.api.wall.service._hydrate_share_rows", return_value=[])
+        mocker.patch("backend.api.wall.service.get_user_score", return_value={
+            "score": 10, "stars": 0.0, "upvotes": 5, "downvotes": 1, "share_count": 2,
+        })
+        mocker.patch("backend.api.wall.service.get_pending_requests", return_value=[])
+        from backend.api.wall.service import get_profile
+        result = get_profile("u1", "viewer-1")
+        assert result["username"] == "alice"
+        assert result["follower_count"] == 5
+        assert result["is_following"] is True
+        assert result["is_self"] is False
+
+    def test_self_view_shows_pending_requests(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", side_effect=[
+            {"id": "u1", "username": "alice", "email": "a@b.com",
+             "full_name": "Alice", "created_at": self._DT},
+            {"cnt": 2}, {"cnt": 1}, None,  # no is_following row for self
+        ])
+        mocker.patch("backend.api.wall.service.query", return_value=[])
+        mocker.patch("backend.api.wall.service._hydrate_share_rows", return_value=[])
+        mocker.patch("backend.api.wall.service.get_user_score", return_value={
+            "score": 0, "stars": 0.0, "upvotes": 0, "downvotes": 0, "share_count": 0,
+        })
+        mocker.patch("backend.api.wall.service.get_pending_requests",
+                     return_value=[{"id": "req-1"}])
+        from backend.api.wall.service import get_profile
+        result = get_profile("u1", "u1")  # same user — self view
+        assert result["is_self"] is True
+        assert len(result["pending_requests"]) == 1
+
+
+# ===========================================================================
+# get_share_preview (lines 902-921)
+# ===========================================================================
+
+class TestGetSharePreview:
+    _DT = __import__("datetime").datetime(2026, 1, 1,
+                      tzinfo=__import__("datetime").timezone.utc)
+
+    def test_not_found_raises(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value=None)
+        from backend.api.wall.service import get_share_preview
+        with pytest.raises(ValueError, match="Share not found"):
+            get_share_preview("bad-share")
+
+    def test_returns_structured_dict(self, mocker):
+        mocker.patch("backend.api.wall.service.query_one", return_value={
+            "id": "share-1", "user_id": "u1", "session_id": "sess-1",
+            "visibility": "public", "description": "test",
+            "created_at": self._DT, "session_title": "My Session",
+            "session_type": "regular", "topic": None,
+            "author_name": "Alice", "author_username": "alice",
+        })
+        mocker.patch("backend.api.wall.service._fetch_session_tree", return_value=[
+            {"id": "sess-1", "title": "My Session", "session_type": "regular",
+             "depth_level": 0, "parent_session_id": None, "topic": None},
+        ])
+        mocker.patch("backend.api.wall.service.get_session_preview_content",
+                     return_value={"type": "messages", "messages": []})
+        from backend.api.wall.service import get_share_preview
+        result = get_share_preview("share-1")
+        assert result["id"] == "share-1"
+        assert result["author_username"] == "alice"
+        assert result["initial_session_id"] == "sess-1"

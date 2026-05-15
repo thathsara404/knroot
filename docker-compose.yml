@@ -91,6 +91,19 @@ services:
       timeout: 5s
       retries: 5
 
+  mock-llm:
+    profiles: [e2e]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python e2e/mock_llm_server.py
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   web-e2e:
     profiles: [e2e]
     build:
@@ -102,8 +115,9 @@ services:
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db-e2e:5432/postgres
       - REDIS_URL=redis://redis-e2e:6379/0
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-e2e-placeholder}
-      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-deepseek/deepseek-chat}
+      - OPENROUTER_API_KEY=e2e-placeholder
+      - OPENROUTER_MODEL=mock-model
+      - OPENROUTER_BASE_URL=http://mock-llm:9000/v1
       - SESSION_SECRET_KEY=e2e-secret-not-for-production-use
       - FLASK_ENV=development
       - RATELIMIT_ENABLED=false
@@ -111,6 +125,8 @@ services:
       db-e2e:
         condition: service_healthy
       redis-e2e:
+        condition: service_healthy
+      mock-llm:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]

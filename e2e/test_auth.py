@@ -195,14 +195,14 @@ class TestProtectedRoutes:
     def test_app_renders_for_authenticated_user(self, page: Page, register_and_login: dict):
         page.goto(f'{BASE_URL}/app')
         expect(page).to_have_url(f'{BASE_URL}/app')
-        expect(page).to_have_title('Dashboard — Knowledge Root')
+        expect(page).to_have_title('Dashboard — Mathemariza')
 
     def test_login_page_accessible_unauthenticated(self, page: Page):
         page.goto(f'{BASE_URL}/login')
         expect(page).to_have_url(f'{BASE_URL}/login')
-        expect(page).to_have_title('Sign In — Knowledge Root')
+        expect(page).to_have_title('Sign In — Mathemariza')
 
     def test_register_page_accessible_unauthenticated(self, page: Page):
         page.goto(f'{BASE_URL}/register')
         expect(page).to_have_url(f'{BASE_URL}/register')
-        expect(page).to_have_title('Create Account — Knowledge Root')
+        expect(page).to_have_title('Create Account — Mathemariza')

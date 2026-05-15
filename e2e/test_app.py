@@ -119,8 +119,10 @@ class TestChat:
         session_links = page.locator("#session-list a")
         if session_links.count() > 0:
             session_links.first.click()
-            page.wait_for_selector('text=Knowledge Tree', timeout=5_000)
-            assert "Knowledge Tree" in page.inner_text("#right-panel")
+            # Clicking a session loads its messages into #chat-messages and
+            # topic-relevant news into #right-panel (not a knowledge tree).
+            page.wait_for_selector("#chat-messages .flex.justify-start", timeout=10_000)
+            assert page.locator("#chat-messages .flex.justify-start").count() >= 1
 
     def test_new_chat_restores_news_panel(self, page: Page, register_and_login: dict):
         page.goto(f"{BASE_URL}/app")
