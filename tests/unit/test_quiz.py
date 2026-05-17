@@ -250,3 +250,75 @@ def test_shuffle_correct_pointer_consistent_across_runs():
     for _ in range(20):
         result = _shuffle_options(q)
         assert result["options"][result["correct"]] == correct_text
+
+
+# ── /quiz/generate-followup ───────────────────────────────────────────────────
+
+def test_generate_followup_requires_auth(client):
+    assert client.post("/quiz/generate-followup", json={"attempt_id": "a"}).status_code == 401
+
+
+def test_generate_followup_missing_attempt_id_returns_422(authed_client):
+    resp = authed_client.post("/quiz/generate-followup", json={})
+    assert resp.status_code == 422
+
+
+def test_generate_followup_returns_attempt_id(authed_client, mocker):
+    mocker.patch(f"{SVC}.generate_quiz_followup", return_value={
+        "attempt_id": "attempt-2", "questions": [_Q], "session_id": "sess-1",
+    })
+    resp = authed_client.post("/quiz/generate-followup", json={"attempt_id": "attempt-1"})
+    assert resp.status_code == 200
+    assert resp.get_json()["attempt_id"] == "attempt-2"
+
+
+def test_generate_followup_calls_service_with_attempt_id(authed_client, mocker):
+    mock = mocker.patch(f"{SVC}.generate_quiz_followup", return_value={
+        "attempt_id": "attempt-2", "questions": [], "session_id": "sess-1",
+    })
+    authed_client.post("/quiz/generate-followup", json={"attempt_id": "attempt-1"})
+    mock.assert_called_once()
+    assert "attempt-1" in str(mock.call_args)
+
+
+# ── /quiz/<attempt_id>/partial — template rendering ───────────────────────────
+
+QUIZ_ROUTES = "backend.api.quiz.routes"
+
+
+def test_quiz_inline_partial_requires_auth(client):
+    assert client.get("/quiz/attempt-1/partial").status_code in (302, 401)
+
+
+def test_quiz_inline_partial_renders_knowledge_check_heading(authed_client, mocker):
+    mocker.patch(f"{SVC}.get_attempt", return_value=_ATTEMPT_OPEN)
+    mocker.patch(f"{QUIZ_ROUTES}.query_one", return_value=None)
+    resp = authed_client.get("/quiz/attempt-1/partial")
+    assert resp.status_code == 200
+    assert b"Knowledge Check" in resp.data
+
+
+def test_quiz_inline_partial_renders_quiz_root_class(authed_client, mocker):
+    mocker.patch(f"{SVC}.get_attempt", return_value=_ATTEMPT_OPEN)
+    mocker.patch(f"{QUIZ_ROUTES}.query_one", return_value=None)
+    resp = authed_client.get("/quiz/attempt-1/partial")
+    assert b"knr-quiz-root" in resp.data
+
+
+def test_quiz_inline_partial_uses_session_title_from_db(authed_client, mocker):
+    mocker.patch(f"{SVC}.get_attempt", return_value=_ATTEMPT_OPEN)
+    mocker.patch(f"{QUIZ_ROUTES}.query_one", side_effect=[
+        {"title": "Gradient Descent Deep Dive"},  # session row
+        None,                                      # quiz_session row
+    ])
+    resp = authed_client.get("/quiz/attempt-1/partial")
+    assert b"Gradient Descent Deep Dive" in resp.data
+
+
+def test_quiz_inline_partial_falls_back_to_knowledge_check_when_session_missing(
+    authed_client, mocker
+):
+    mocker.patch(f"{SVC}.get_attempt", return_value=_ATTEMPT_OPEN)
+    mocker.patch(f"{QUIZ_ROUTES}.query_one", return_value=None)  # session row not found
+    resp = authed_client.get("/quiz/attempt-1/partial")
+    assert b"Knowledge Check" in resp.data

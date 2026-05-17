@@ -54,13 +54,14 @@ The Dockerfile runs: `gunicorn "wsgi:app" --bind 0.0.0.0:5000 --workers 4`
 ## Branch Strategy
 
 ```
-main
- ├── feature/auth                    Phase 1
- ├── feature/session-management      Phase 2
- ├── feature/smart-news-cache        Phase 3
- ├── feature/knowledge-check         Phase 4
- ├── feature/polish                  Phase 5
- └── feature/news-discuss-learn      Phase 6
+main  ← all phases merged ✅
+ ├── feature/auth                    Phase 1 ✅ merged
+ ├── feature/session-management      Phase 2 ✅ merged
+ ├── feature/smart-news-cache        Phase 3 ✅ merged
+ ├── feature/knowledge-check         Phase 4 ✅ merged
+ ├── feature/polish                  Phase 5 ✅ merged
+ ├── feature/news-discuss-learn      Phase 6 ✅ merged
+ └── feat/rich-artifacts             Rich Artifacts ✅ in progress → main
 ```
 
 Each branch is opened as a PR against `main`. Automated GitHub Actions run on every PR open/sync:
@@ -77,35 +78,37 @@ Merge only after all checks green and PR description references affected `PROGRE
 
 | Layer           | Tool                  | Location              | When runs          |
 |-----------------|-----------------------|-----------------------|--------------------|
-| Backend unit    | pytest + pytest-flask | `tests/unit/`         | `ci.yml` on PR     |
-| Template/view   | pytest + Flask client | `tests/unit/test_pages.py` | `ci.yml` on PR |
-| E2E             | Playwright            | `e2e/*.spec.ts`       | `ci.yml` on PR     |
-| Static analysis | flake8 + mypy         | `backend/`            | `ci.yml` on PR     |
+| Backend unit    | pytest + pytest-flask | `tests/unit/`         | `make test-unit`   |
+| Template/view   | pytest + Flask client | `tests/unit/`         | `make test-unit`   |
+| E2E             | Playwright (Python)   | `e2e/*.py`            | `make test-e2e`    |
+| Static analysis | flake8                | `backend/`            | CI on PR           |
 
-No frontend unit tests (no React component logic to isolate). Template rendering is tested via the Flask test client in pytest (assert HTML response codes, content, redirects).
+No frontend unit tests (pure SSR — no React). Template rendering is tested via the Flask test client (assert HTML status codes, response content, redirects). Coverage target: ≥ 80% via `--cov-fail-under=80`.
 
-**Backend test structure:**
+**Unit test structure (current — 400+ tests):**
 ```
 tests/
-  conftest.py          ← pytest fixtures: test app, test DB, test Redis, auth helpers
+  conftest.py          ← app fixture (TestingConfig), fakeredis, authed_client
   unit/
-    test_auth.py       ← register/login/logout routes + service logic
+    test_auth.py       ← register/login/logout/me + rate limiting (30+ tests)
     test_pages.py      ← page routes: status codes, redirects, auth guards
-    test_sessions.py
-    test_news.py
-    test_quiz.py
-  integration/         ← optional, hits real DB in CI
+    test_sessions.py   ← session CRUD, ownership, auto-title, message replay (40+ tests)
+    test_chat.py       ← chat send, quiz-section, artifact normalisation (60+ tests)
+    test_news.py       ← feeds, cache, embeddings, topic-news (40+ tests)
+    test_discuss.py    ← sectioned response, learn-more, tree, artifacts (50+ tests)
+    test_quiz.py       ← generate/attempt/submit/retry/relearn/followup/_validate/_shuffle (50+ tests)
+    test_wall.py       ← CRUD, votes, comments, follow, profile, saves, scoring (80+ tests)
 ```
 
-**E2E structure:**
+**E2E structure (current — 115+ tests, Playwright Python):**
 ```
 e2e/
-  fixtures.ts          ← Playwright fixtures: logged-in page, seeded session
-  auth.spec.ts
-  sessions.spec.ts
-  news.spec.ts
-  quiz.spec.ts
-  full-flow.spec.ts    ← register → chat → quiz golden path
+  conftest.py              ← register_and_login, second_api_user fixtures; mock LLM on :9000
+  mock_llm_server.py       ← FastAPI mock at port 9000 with deterministic quiz/sectioned/relearn responses
+  test_app.py              ← layout, news, chat, session management, news discuss (20+ tests)
+  test_quiz.py             ← generation, submit, retry, relearn (12 tests)
+  test_knowledge_root.py   ← sectioned response, artifacts rendering (20+ tests)
+  test_wall.py             ← wall CRUD, votes, comments, follow, follow-requests (40+ tests)
 ```
 
 ---

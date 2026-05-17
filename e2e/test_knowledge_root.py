@@ -5,10 +5,11 @@ deterministic canned responses, so no real API tokens are consumed.
 """
 from __future__ import annotations
 
+import json
 import pytest
 from playwright.sync_api import Page, expect
 
-from e2e.conftest import BASE_URL
+from e2e.conftest import BASE_URL, api_register
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -423,19 +424,231 @@ class TestArtifactsRendering:
         page.wait_for_timeout(300)
         expect(page.locator(".katex-block").first).not_to_be_visible()
 
-    def test_sections_without_artifacts_show_no_toggle(
+    def test_all_three_artifact_types_have_toggles(
         self, page: Page, register_and_login: dict
     ):
         page.goto(f"{BASE_URL}/app")
         _send_and_wait(page, "What are advanced ML considerations?")
         page.wait_for_selector("text=Advanced Considerations", timeout=_ARTIFACT_TIMEOUT)
-        # s3 has no artifacts — no Show Diagram button should exist for that card
-        # (s1 has formula, s2 has chart — those toggles exist; s3 must have none)
-        # We verify by checking the total toggle count matches only s1 and s2
+        # s1=formula, s2=chart, s3=diagram — all three toggles must be present
         page.wait_for_selector('button:has-text("Show Formula")', timeout=_ARTIFACT_TIMEOUT)
-        formula_count = page.locator('button:has-text("Show Formula")').count()
-        chart_count = page.locator('button:has-text("Show Chart")').count()
-        diagram_count = page.locator('button:has-text("Show Diagram")').count()
-        assert formula_count >= 1
-        assert chart_count >= 1
-        assert diagram_count == 0   # no diagram artifact in mock response
+        assert page.locator('button:has-text("Show Formula")').count() >= 1
+        assert page.locator('button:has-text("Show Chart")').count() >= 1
+        assert page.locator('button:has-text("Show Diagram")').count() >= 1
+
+
+# ---------------------------------------------------------------------------
+# Helpers for wall preview and import tests
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Diagram artifact toggle (Mermaid)
+# ---------------------------------------------------------------------------
+# s3 "Advanced Considerations" now carries a diagram artifact in the mock response.
+
+class TestDiagramArtifact:
+    def test_diagram_artifact_toggle_button_present(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "What are the advanced theoretical considerations?")
+        page.wait_for_selector('button:has-text("Show Diagram")', timeout=_ARTIFACT_TIMEOUT)
+        expect(page.locator('button:has-text("Show Diagram")').first).to_be_visible()
+
+    def test_diagram_toggle_reveals_mermaid_wrapper(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        _send_and_wait(page, "Explain advanced considerations in depth")
+        page.wait_for_selector('button:has-text("Show Diagram")', timeout=_ARTIFACT_TIMEOUT)
+        page.locator('button:has-text("Show Diagram")').first.click()
+        # The artifact panel slides open revealing its .mermaid-wrapper.
+        # Use :not(.hierarchy-diagram-wrapper) to distinguish from the top hierarchy chart.
+        expect(
+            page.locator(".mermaid-wrapper:not(.hierarchy-diagram-wrapper)").first
+        ).to_be_visible(timeout=5_000)
+
+
+# ---------------------------------------------------------------------------
+# Helpers for wall preview and import tests
+# ---------------------------------------------------------------------------
+
+import uuid as _uuid
+
+
+def _unique_api_user(prefix: str) -> dict:
+    """Return a unique user payload suitable for api_register."""
+    uid = _uuid.uuid4().hex[:8]
+    return {
+        "first_name": "User",
+        "last_name": prefix.capitalize(),
+        "username": f"{prefix}_{uid}",
+        "email": f"{prefix}_{uid}@example.com",
+        "password": "SecurePass1",
+        "confirm_password": "SecurePass1",
+    }
+
+
+def _browser_login_as(page: Page, user: dict) -> None:
+    """Log out the current browser user, then log in as `user`."""
+    page.request.post(f"{BASE_URL}/auth/logout")
+    page.goto(f"{BASE_URL}/login")
+    page.fill("#identifier", user["email"])
+    page.fill("#password", user["password"])
+    page.click('button[type="submit"]')
+    page.wait_for_url(f"{BASE_URL}/app", timeout=20_000)
+
+
+# ---------------------------------------------------------------------------
+# Wall preview modal — artifacts inside share_session_preview.html
+# ---------------------------------------------------------------------------
+# These tests verify that when a session with rich artifacts is shared and its
+# preview modal is opened, the hierarchy diagram wrapper and artifact toggles
+# are present and functional inside the modal.
+
+_PREVIEW_MODAL_TIMEOUT = 12_000
+
+
+def _send_and_share(page: Page) -> str:
+    """Send one message (gets rich mock response), create a public share, return share_id."""
+    page.goto(f"{BASE_URL}/app")
+    _send_and_wait(page, "Explain gradient descent for the wall preview test")
+
+    # Get the session_id from the first item in the sidebar
+    page.wait_for_selector("[data-session-id]", timeout=10_000)
+    session_id = page.locator("[data-session-id]").first.get_attribute("data-session-id")
+
+    # Create a public share via API — page.request reuses the browser session cookie
+    resp = page.request.post(
+        f"{BASE_URL}/wall/shares",
+        data=json.dumps({"session_id": session_id}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status == 201
+    return resp.json()["id"]
+
+
+def _open_preview(page: Page, share_id: str) -> None:
+    """Trigger wallOpenPreview and wait for the modal to settle."""
+    page.evaluate(f"window.wallOpenPreview('{share_id}')")
+    page.wait_for_selector("#share-preview-overlay", timeout=_PREVIEW_MODAL_TIMEOUT)
+    page.wait_for_timeout(600)   # allow HTMX to settle
+
+
+class TestWallPreviewArtifacts:
+    def test_wall_preview_shows_hierarchy_wrapper(
+        self, page: Page, register_and_login: dict
+    ):
+        share_id = _send_and_share(page)
+        _open_preview(page, share_id)
+        expect(
+            page.locator("#preview-content .hierarchy-diagram-wrapper").first
+        ).to_be_visible(timeout=5_000)
+
+    def test_wall_preview_shows_formula_toggle(
+        self, page: Page, register_and_login: dict
+    ):
+        share_id = _send_and_share(page)
+        _open_preview(page, share_id)
+        expect(
+            page.locator('#preview-content button:has-text("Show Formula")').first
+        ).to_be_visible(timeout=5_000)
+
+    def test_wall_preview_shows_chart_toggle(
+        self, page: Page, register_and_login: dict
+    ):
+        share_id = _send_and_share(page)
+        _open_preview(page, share_id)
+        expect(
+            page.locator('#preview-content button:has-text("Show Chart")').first
+        ).to_be_visible(timeout=5_000)
+
+    def test_wall_preview_formula_toggle_reveals_katex_block(
+        self, page: Page, register_and_login: dict
+    ):
+        share_id = _send_and_share(page)
+        _open_preview(page, share_id)
+        page.locator('#preview-content button:has-text("Show Formula")').first.click()
+        expect(
+            page.locator("#preview-content .katex-block").first
+        ).to_be_visible(timeout=5_000)
+
+    def test_wall_preview_chart_toggle_reveals_canvas(
+        self, page: Page, register_and_login: dict
+    ):
+        share_id = _send_and_share(page)
+        _open_preview(page, share_id)
+        page.locator('#preview-content button:has-text("Show Chart")').first.click()
+        expect(
+            page.locator("#preview-content canvas.artifact-chart").first
+        ).to_be_visible(timeout=5_000)
+
+
+# ---------------------------------------------------------------------------
+# Imported sessions — artifacts preserved through deep copy
+# ---------------------------------------------------------------------------
+# These tests verify that when User B imports User A's shared session, the
+# copied session_messages content retains all artifact JSON, and artifacts
+# render correctly when User B views the imported session in the chat.
+
+class TestImportedSessionArtifacts:
+    def test_imported_session_shows_hierarchy_wrapper(
+        self, page: Page, register_and_login: dict
+    ):
+        # User A: send message, share session
+        share_id = _send_and_share(page)
+
+        # User B: register via API and import the share
+        user_b_data = _unique_api_user("beta")
+        import_session = api_register(BASE_URL, user_b_data)
+        import_resp = import_session.post(f"{BASE_URL}/wall/shares/{share_id}/import")
+        assert import_resp.status_code == 201
+
+        # Log out user A, log in as user B
+        _browser_login_as(page, user_b_data)
+
+        # User B: click the imported session in the sidebar
+        page.wait_for_selector("[data-session-id]", timeout=10_000)
+        page.locator("[data-session-id]").first.click()
+
+        # Verify hierarchy wrapper is present in the loaded messages
+        page.wait_for_selector(_AI_RESPONSE_SELECTOR, timeout=15_000)
+        page.wait_for_selector(".hierarchy-diagram-wrapper", timeout=8_000)
+        expect(page.locator(".hierarchy-diagram-wrapper").first).to_be_visible()
+
+    def test_imported_session_shows_formula_artifact_toggle(
+        self, page: Page, register_and_login: dict
+    ):
+        share_id = _send_and_share(page)
+
+        user_b_data = _unique_api_user("gamma")
+        import_session = api_register(BASE_URL, user_b_data)
+        import_session.post(f"{BASE_URL}/wall/shares/{share_id}/import")
+
+        _browser_login_as(page, user_b_data)
+
+        page.wait_for_selector("[data-session-id]", timeout=10_000)
+        page.locator("[data-session-id]").first.click()
+        page.wait_for_selector(_AI_RESPONSE_SELECTOR, timeout=15_000)
+
+        page.wait_for_selector('button:has-text("Show Formula")', timeout=8_000)
+        expect(page.locator('button:has-text("Show Formula")').first).to_be_visible()
+
+    def test_imported_session_formula_toggle_renders_katex(
+        self, page: Page, register_and_login: dict
+    ):
+        share_id = _send_and_share(page)
+
+        user_b_data = _unique_api_user("delta")
+        import_session = api_register(BASE_URL, user_b_data)
+        import_session.post(f"{BASE_URL}/wall/shares/{share_id}/import")
+
+        _browser_login_as(page, user_b_data)
+
+        page.wait_for_selector("[data-session-id]", timeout=10_000)
+        page.locator("[data-session-id]").first.click()
+        page.wait_for_selector(_AI_RESPONSE_SELECTOR, timeout=15_000)
+
+        page.wait_for_selector('button:has-text("Show Formula")', timeout=8_000)
+        page.locator('button:has-text("Show Formula")').first.click()
+        expect(page.locator(".katex-block").first).to_be_visible(timeout=5_000)

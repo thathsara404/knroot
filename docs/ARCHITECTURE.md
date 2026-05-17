@@ -185,20 +185,29 @@ ai-agent/
 ├── backend/static/                     ← Served at /static/ — minimal custom JS only
 │   ├── app.js                          ← Alpine appState() + all HTMX event wiring
 │   ├── quiz.js                         ← quizState() / quizStateInline() Alpine components
+│   ├── artifacts.js                    ← Shared IIFE for KaTeX / Mermaid / Chart.js rendering (window.initArtifacts)
 │   ├── auth.js                         ← Login/register page helpers
 │   └── toast.js                        ← Lightweight toast notification helper
 │
 ├── tests/                              ← pytest — at project root, imports from backend.*
-│   ├── conftest.py                     ← app fixture (TestingConfig), test DB, fakeredis, auth helpers
+│   ├── conftest.py                     ← app fixture (TestingConfig), test DB, fakeredis, authed_client helpers
 │   └── unit/
-│       ├── test_auth.py
-│       ├── test_sessions.py
-│       ├── test_chat.py
-│       ├── test_news.py
-│       ├── test_discuss.py
-│       └── test_quiz.py
+│       ├── test_auth.py                ← register / login / logout / me routes + rate limiting (30+ tests)
+│       ├── test_pages.py               ← page route status codes, redirects, auth guards
+│       ├── test_sessions.py            ← session CRUD, ownership, auto-title, message replay (40+ tests)
+│       ├── test_chat.py                ← chat send, quiz-section generation, artifact normalisation (60+ tests)
+│       ├── test_news.py                ← news feeds, cache, embeddings, topic-news pipeline (40+ tests)
+│       ├── test_discuss.py             ← sectioned response parsing, learn-more, tree (50+ tests)
+│       ├── test_quiz.py                ← quiz generate/attempt/submit/retry/relearn/followup/_validate/_shuffle (50+ tests)
+│       └── test_wall.py                ← wall CRUD, votes, comments, follow, profile, saves, scoring (80+ tests)
 │
-├── e2e/                                ← Playwright E2E specs
+├── e2e/                                ← Playwright Python E2E tests (run via `make test-e2e`)
+│   ├── conftest.py                     ← register_and_login, second_api_user, page fixture; mock LLM on :9000
+│   ├── test_app.py                     ← 3-pane layout, news tabs, chat, session management, news discuss (40 tests)
+│   ├── test_quiz.py                    ← quiz generation, submit, retry, relearn inline (12 tests)
+│   ├── test_knowledge_root.py          ← sectioned response, artifacts rendering, knowledge tree (20+ tests)
+│   ├── test_wall.py                    ← wall CRUD, votes, comments, delete, unsave, friends-only, follow requests (40+ tests)
+│   └── mock_llm_server.py             ← FastAPI mock LLM at port 9000; deterministic responses for all prompt types
 ├── docs/                               ← Architecture, implementation plan, progress tracker
 ├── .claude/agents/platform-dev.md     ← Claude Code sub-agent for this project
 └── .github/workflows/                  ← CI, code-review, security-review, architecture-review
@@ -2931,3 +2940,68 @@ The same pattern is applied to the batch author score query in `_hydrate_share_r
 - The "How scoring works" detail block was removed from the always-visible card.
 - The card now contains a single button that opens a full modal (`x-data="{ showScoringModal: false }"`).
 - The modal renders all four sections (votes, reshare bonus, toxic penalty, star milestones) using `{{ scoring.* }}` template variables sourced from the `SCORING` dict — changes to the config are reflected in the UI automatically.
+
+---
+
+## 37. Test Suite
+
+### 37.1 Unit Tests (`tests/unit/`)
+
+Run with `make test-unit` (on the Ubuntu VM — not Windows, because the test DB requires a real PostgreSQL connection):
+
+```
+pytest tests/ --cov=backend --cov-report=term-missing --cov-fail-under=80
+```
+
+| File | What it covers | Approx. count |
+|------|---------------|---------------|
+| `test_auth.py` | register / login / logout / me routes + service logic + rate limits | 30+ |
+| `test_pages.py` | page routes: status codes, redirects, auth guards | 10+ |
+| `test_sessions.py` | session CRUD, ownership checks, auto-title, message replay | 40+ |
+| `test_chat.py` | chat send, LLM pipeline, quiz-section generation, artifact normalisation, graceful fallbacks | 60+ |
+| `test_news.py` | feed categories, Redis cache, embeddings, topic-news MMR pipeline | 40+ |
+| `test_discuss.py` | sectioned response parsing, learn-more child creation, session tree, artifact normalisation | 50+ |
+| `test_quiz.py` | generate / attempt / submit / retry / relearn / followup / `_validate` / `_shuffle_options` | 50+ |
+| `test_wall.py` | shares CRUD, votes, comments, follow, profile, saves, scoring events, friends-only visibility | 80+ |
+
+**Total: 400+ unit tests, coverage ≥ 80%**
+
+### 37.2 E2E Tests (`e2e/`)
+
+Run with `make test-e2e` (requires the full Docker stack via `docker compose --profile e2e up`).
+
+**Infrastructure:**
+
+| Component | Description |
+|-----------|-------------|
+| `web-e2e` service | Flask app built from `Dockerfile.e2e`; connects to same DB + Redis |
+| `mock-llm` service | `e2e/mock_llm_server.py` FastAPI server on port 9000; `LLM_BASE_URL=http://mock-llm:9000` |
+| Mock LLM detection | Prompt keywords → deterministic fixtures: `_SECTIONED`, `_QUIZ`, `_RELEARN`, `_PLAIN` |
+| `make test-e2e-fresh` | Drops and recreates the E2E DB before the run |
+| `make e2e-health` | Smoke-checks the E2E stack is ready |
+| `make e2e-logs-mock` | Tails mock LLM server logs |
+
+**Test files:**
+
+| File | Classes / areas | Approx. count |
+|------|----------------|---------------|
+| `test_app.py` | `TestThreePaneLayout`, `TestNewsPanel`, `TestChat`, `TestSessionManagement`, `TestNewsDiscuss` | 20+ |
+| `test_quiz.py` | `TestQuizGeneration`, `TestQuizRetry`, `TestQuizRelearn` | 12 |
+| `test_knowledge_root.py` | Sectioned response rendering, `TestArtifactsRendering` (hierarchy/formula/chart toggles) | 20+ |
+| `test_wall.py` | `TestWallShare`, `TestWallVote`, `TestWallComment`, `TestWallFollow`, `TestSharePreview`, `TestCommentDeletion`, `TestUnsaveShare`, `TestFriendsOnlyShare`, `TestFollowRequests` | 40+ |
+
+**Total: 115+ E2E tests**
+
+### 37.3 Key Testing Patterns
+
+**Two-user browser flows (follow requests, friends-only visibility):**
+Use `_browser_login_as(page, username, password)` which POSTs to `/auth/logout` via `page.request.post()` (shares browser cookie jar), then navigates to `/login` and fills the HTMX form. `page.wait_for_url(BASE_URL + "/app")` handles the `HX-Redirect` response.
+
+**Invisible buttons (CSS `opacity-0`):**
+Comment delete buttons use `opacity-0 group-hover/comment:opacity-100` — rendered in DOM but not visible without hover. Playwright's `click(force=True)` bypasses the visibility check. Only works when the button is actually in the DOM (Alpine `x-if` must pass — i.e., the current user owns the comment).
+
+**Mock LLM quiz responses:**
+The mock server returns deterministic MCQ JSON when it detects quiz keywords in the prompt. The `/quiz/<attempt_id>/partial` route uses `@require_auth` (not `@require_api_auth`) so unauthenticated access returns a 302 redirect, not 401 — unit tests check `status_code in (302, 401)`.
+
+**`build_llm_client` patching:**
+The `/chat/quiz-section` handler imports `build_llm_client` inside the function body. Patch at `backend.core.llm.build_llm_client`, not `backend.api.chat.routes.build_llm_client`.

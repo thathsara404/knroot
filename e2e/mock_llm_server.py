@@ -111,7 +111,18 @@ _SECTIONED = json.dumps({
                 "these edge cases until they encounter them in production."
             ),
             "learn_more_topic": "Limitations, edge cases, and open research problems",
-            "artifacts": [],
+            "artifacts": [
+                {
+                    "type": "diagram",
+                    "mermaid": (
+                        "flowchart TD\n"
+                        "  Theory[Foundations] --> Edge[Edge Cases]\n"
+                        "  Theory --> Limits[Known Limits]\n"
+                        "  Limits --> Research[Open Research]"
+                    ),
+                    "caption": "Theoretical landscape",
+                },
+            ],
         },
     ],
     "outro": (

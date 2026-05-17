@@ -1399,3 +1399,189 @@ class TestGetSharePreview:
         assert result["id"] == "share-1"
         assert result["author_username"] == "alice"
         assert result["initial_session_id"] == "sess-1"
+
+
+# ===========================================================================
+# share_session_preview.html — artifact rendering in wall preview modal
+# ===========================================================================
+
+_SESSION_PREVIEW_RICH = {
+    "type": "messages",
+    "session_type": "regular",
+    "article_link": "",
+    "article_title": "",
+    "title": "ML Fundamentals",
+    "messages": [
+        {
+            "role": "user",
+            "content": {"type": "text", "text": "Tell me about gradient descent"},
+        },
+        {
+            "role": "assistant",
+            "content": {
+                "type": "sectioned",
+                "intro": "This covers machine learning optimisation fundamentals.",
+                "hierarchy_diagram": (
+                    "flowchart TD\n"
+                    "  ROOT[ML Overview] --> A[Gradient Descent]\n"
+                    "  ROOT --> B[Neural Networks]\n"
+                    "  ROOT --> C[Regularisation]\n"
+                    "  ROOT --> D[Architecture]"
+                ),
+                "sections": [
+                    {
+                        "id": "s1",
+                        "title": "Gradient Descent",
+                        "content": "The core iterative optimisation algorithm.",
+                        "key_points": ["Iterative convergence"],
+                        "misconception": "It always finds global minima.",
+                        "learn_more_topic": "Optimisation theory",
+                        "artifacts": [
+                            {
+                                "type": "formula",
+                                "latex": r"\theta := \theta - \alpha \nabla J(\theta)",
+                                "caption": "Weight update rule",
+                            }
+                        ],
+                    },
+                    {
+                        "id": "s2",
+                        "title": "Neural Networks",
+                        "content": "Interconnected layers of neurons.",
+                        "key_points": ["Layers"],
+                        "misconception": "Mimics the human brain exactly.",
+                        "learn_more_topic": "Deep learning",
+                        "artifacts": [
+                            {
+                                "type": "chart",
+                                "chart_type": "bar",
+                                "title": "Layer Sizes",
+                                "labels": ["Input", "Hidden", "Output"],
+                                "datasets": [{"label": "Units", "data": [784, 128, 10]}],
+                                "caption": "Typical MLP architecture",
+                            }
+                        ],
+                    },
+                    {
+                        "id": "s3",
+                        "title": "Regularisation",
+                        "content": "Preventing overfitting via constraints.",
+                        "key_points": ["L1/L2 penalties"],
+                        "misconception": "More data alone fixes overfitting.",
+                        "learn_more_topic": "Regularisation techniques",
+                        "artifacts": [
+                            {
+                                "type": "diagram",
+                                "mermaid": (
+                                    "flowchart TD\n"
+                                    "  L1[L1 Norm] --> Sparse[Sparse Weights]\n"
+                                    "  L2[L2 Norm] --> Small[Small Weights]"
+                                ),
+                                "caption": "Regularisation taxonomy",
+                            }
+                        ],
+                    },
+                    {
+                        "id": "s4",
+                        "title": "Architecture",
+                        "content": "How layers are arranged in a network.",
+                        "artifacts": [],
+                    },
+                ],
+                "outro": "Start with gradient descent to understand how networks learn.",
+            },
+        },
+    ],
+}
+
+_SESSION_PREVIEW_PLAIN = {
+    "type": "messages",
+    "session_type": "regular",
+    "article_link": "",
+    "article_title": "",
+    "title": "Plain Topic",
+    "messages": [
+        {"role": "user", "content": {"type": "text", "text": "Tell me something"}},
+        {
+            "role": "assistant",
+            "content": {
+                "type": "sectioned",
+                "intro": "Overview.",
+                "sections": [
+                    {"id": "s1", "title": "Topic", "content": "Content.", "artifacts": []}
+                ],
+                "outro": "Done.",
+            },
+        },
+    ],
+}
+
+
+def _preview_url(share_id="share-1", session_id="sess-1"):
+    return f"/wall/shares/{share_id}/sessions/{session_id}/preview/partial"
+
+
+def test_session_preview_renders_hierarchy_diagram_wrapper(authed_client, mocker):
+    mocker.patch(f"{WALL_SVC}.get_share_preview", return_value=_PREVIEW)
+    mocker.patch(f"{WALL_SVC}.get_session_preview_content", return_value=_SESSION_PREVIEW_RICH)
+    resp = authed_client.get(_preview_url())
+    assert resp.status_code == 200
+    assert b"hierarchy-diagram-wrapper" in resp.data
+
+
+def test_session_preview_renders_section_title_data_attribute(authed_client, mocker):
+    mocker.patch(f"{WALL_SVC}.get_share_preview", return_value=_PREVIEW)
+    mocker.patch(f"{WALL_SVC}.get_session_preview_content", return_value=_SESSION_PREVIEW_RICH)
+    resp = authed_client.get(_preview_url())
+    assert b"data-section-title" in resp.data
+
+
+def test_session_preview_renders_formula_artifact_toggle(authed_client, mocker):
+    mocker.patch(f"{WALL_SVC}.get_share_preview", return_value=_PREVIEW)
+    mocker.patch(f"{WALL_SVC}.get_session_preview_content", return_value=_SESSION_PREVIEW_RICH)
+    resp = authed_client.get(_preview_url())
+    assert b"Show Formula" in resp.data
+
+
+def test_session_preview_renders_chart_artifact_toggle(authed_client, mocker):
+    mocker.patch(f"{WALL_SVC}.get_share_preview", return_value=_PREVIEW)
+    mocker.patch(f"{WALL_SVC}.get_session_preview_content", return_value=_SESSION_PREVIEW_RICH)
+    resp = authed_client.get(_preview_url())
+    assert b"Show Chart" in resp.data
+
+
+def test_session_preview_renders_diagram_artifact_toggle(authed_client, mocker):
+    mocker.patch(f"{WALL_SVC}.get_share_preview", return_value=_PREVIEW)
+    mocker.patch(f"{WALL_SVC}.get_session_preview_content", return_value=_SESSION_PREVIEW_RICH)
+    resp = authed_client.get(_preview_url())
+    assert b"Show Diagram" in resp.data
+
+
+def test_session_preview_renders_katex_block_for_formula(authed_client, mocker):
+    mocker.patch(f"{WALL_SVC}.get_share_preview", return_value=_PREVIEW)
+    mocker.patch(f"{WALL_SVC}.get_session_preview_content", return_value=_SESSION_PREVIEW_RICH)
+    resp = authed_client.get(_preview_url())
+    assert b"katex-block" in resp.data
+
+
+def test_session_preview_renders_chart_canvas(authed_client, mocker):
+    mocker.patch(f"{WALL_SVC}.get_share_preview", return_value=_PREVIEW)
+    mocker.patch(f"{WALL_SVC}.get_session_preview_content", return_value=_SESSION_PREVIEW_RICH)
+    resp = authed_client.get(_preview_url())
+    assert b"artifact-chart" in resp.data
+
+
+def test_session_preview_no_hierarchy_wrapper_when_diagram_absent(authed_client, mocker):
+    mocker.patch(f"{WALL_SVC}.get_share_preview", return_value=_PREVIEW)
+    mocker.patch(f"{WALL_SVC}.get_session_preview_content", return_value=_SESSION_PREVIEW_PLAIN)
+    resp = authed_client.get(_preview_url())
+    assert b"hierarchy-diagram-wrapper" not in resp.data
+
+
+def test_session_preview_no_artifact_toggles_when_all_sections_empty(authed_client, mocker):
+    mocker.patch(f"{WALL_SVC}.get_share_preview", return_value=_PREVIEW)
+    mocker.patch(f"{WALL_SVC}.get_session_preview_content", return_value=_SESSION_PREVIEW_PLAIN)
+    resp = authed_client.get(_preview_url())
+    assert b"Show Formula" not in resp.data
+    assert b"Show Chart" not in resp.data
+    assert b"Show Diagram" not in resp.data

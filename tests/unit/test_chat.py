@@ -136,7 +136,11 @@ def test_parse_valid_sectioned_json():
     data = {"type": "sectioned", "sections": [{"id": "s1", "title": "T", "content": "C"}]}
     val, typ = _parse_llm_response(_json.dumps(data))
     assert typ == "sectioned"
-    assert val == data
+    assert val["type"] == "sectioned"
+    assert val["sections"][0]["id"] == "s1"
+    # _normalise_sectioned backfills these defaults
+    assert val["hierarchy_diagram"] == ""
+    assert val["sections"][0]["artifacts"] == []
 
 
 def test_parse_plain_type_json_extracts_text():
@@ -151,7 +155,11 @@ def test_parse_strips_markdown_fences_before_parsing():
     fenced = f"```json\n{_json.dumps(data)}\n```"
     val, typ = _parse_llm_response(fenced)
     assert typ == "sectioned"
-    assert val == data
+    assert val["type"] == "sectioned"
+    assert val["sections"][0]["id"] == "s1"
+    # fence stripping works; normalisation still applies
+    assert val["hierarchy_diagram"] == ""
+    assert val["sections"][0]["artifacts"] == []
 
 
 def test_parse_invalid_json_returns_plain():
@@ -380,3 +388,85 @@ def test_chat_htmx_plain_sectioned_no_artifact_toggles_when_absent(authed_client
     assert b"Show Formula" not in resp.data
     assert b"Show Chart" not in resp.data
     assert b"Show Diagram" not in resp.data
+
+
+# ── /chat/quiz-section — template rendering ───────────────────────────────────
+
+import json as _json_mod
+
+_LLM_PATCH = "backend.core.llm.build_llm_client"
+
+_SECTION_QUESTIONS = [
+    {"id": "q1", "text": "What does gradient descent minimise?",
+     "options": ["Loss function", "Accuracy", "Weights", "Bias"], "correct": 0},
+    {"id": "q2", "text": "What triggers the vanishing gradient problem?",
+     "options": ["Deep networks", "Dropout", "BatchNorm", "Adam"], "correct": 0},
+]
+
+
+def test_quiz_section_success_returns_200(authed_client, mocker):
+    mock_llm = mocker.MagicMock()
+    mock_llm.invoke.return_value = mocker.MagicMock(
+        content=_json_mod.dumps({"questions": _SECTION_QUESTIONS})
+    )
+    mocker.patch(_LLM_PATCH, return_value=mock_llm)
+    resp = authed_client.post("/chat/quiz-section", json={
+        "session_id": "sess-1",
+        "section_id": "s1",
+        "section_content": "Gradient descent is an iterative optimisation algorithm.",
+    })
+    assert resp.status_code == 200
+
+
+def test_quiz_section_renders_quick_quiz_header(authed_client, mocker):
+    mock_llm = mocker.MagicMock()
+    mock_llm.invoke.return_value = mocker.MagicMock(
+        content=_json_mod.dumps({"questions": _SECTION_QUESTIONS})
+    )
+    mocker.patch(_LLM_PATCH, return_value=mock_llm)
+    resp = authed_client.post("/chat/quiz-section", json={
+        "session_id": "sess-1",
+        "section_id": "s1",
+        "section_content": "Gradient descent is an iterative optimisation algorithm.",
+    })
+    assert b"Quick Quiz" in resp.data
+
+
+def test_quiz_section_renders_section_id_in_container(authed_client, mocker):
+    mock_llm = mocker.MagicMock()
+    mock_llm.invoke.return_value = mocker.MagicMock(
+        content=_json_mod.dumps({"questions": _SECTION_QUESTIONS})
+    )
+    mocker.patch(_LLM_PATCH, return_value=mock_llm)
+    resp = authed_client.post("/chat/quiz-section", json={
+        "session_id": "sess-1",
+        "section_id": "my-section-42",
+        "section_content": "Gradient descent is an iterative optimisation algorithm.",
+    })
+    assert b"my-section-42" in resp.data
+
+
+def test_quiz_section_llm_failure_returns_graceful_fallback(authed_client, mocker):
+    mock_llm = mocker.MagicMock()
+    mock_llm.invoke.side_effect = Exception("LLM timeout")
+    mocker.patch(_LLM_PATCH, return_value=mock_llm)
+    resp = authed_client.post("/chat/quiz-section", json={
+        "session_id": "sess-1",
+        "section_id": "s1",
+        "section_content": "Some content about ML optimisation techniques.",
+    })
+    assert resp.status_code == 200
+    assert b"Could not generate quiz" in resp.data
+
+
+def test_quiz_section_invalid_json_from_llm_returns_graceful_fallback(authed_client, mocker):
+    mock_llm = mocker.MagicMock()
+    mock_llm.invoke.return_value = mocker.MagicMock(content="not valid json {{{{")
+    mocker.patch(_LLM_PATCH, return_value=mock_llm)
+    resp = authed_client.post("/chat/quiz-section", json={
+        "session_id": "sess-1",
+        "section_id": "s1",
+        "section_content": "Content about ML optimisation and backpropagation.",
+    })
+    assert resp.status_code == 200
+    assert b"Could not generate quiz" in resp.data

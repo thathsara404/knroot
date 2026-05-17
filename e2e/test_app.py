@@ -137,3 +137,55 @@ class TestChat:
         # News panel should come back
         page.wait_for_selector("#news-articles", timeout=10_000)
         expect(page.locator("#news-articles")).to_be_visible()
+
+
+# ---------------------------------------------------------------------------
+# Session management — delete
+# ---------------------------------------------------------------------------
+
+
+class TestSessionManagement:
+    def test_delete_session_removes_from_sidebar(self, page: Page, register_and_login: dict):
+        page.goto(f"{BASE_URL}/app")
+        textarea = page.locator('textarea[name="message"]')
+        textarea.fill("Explain neural networks briefly")
+        textarea.press("Enter")
+        page.wait_for_selector("#chat-messages .flex.justify-start", timeout=60_000)
+        page.wait_for_timeout(500)
+
+        page.wait_for_selector("[data-session-id]", timeout=8_000)
+        session_id = page.locator("[data-session-id]").first.get_attribute("data-session-id")
+        before_count = page.locator("#session-list a").count()
+
+        # Trigger delete via JS to avoid relying on hover-only button discovery
+        page.evaluate(f"window.deleteSession('{session_id}', 0)")
+        page.wait_for_selector("#knr-confirm-ok", timeout=5_000)
+        page.locator("#knr-confirm-ok").click()
+
+        page.wait_for_timeout(1_500)
+        assert page.locator("#session-list a").count() < before_count
+
+
+# ---------------------------------------------------------------------------
+# News → discuss (Explore button on news article cards)
+# ---------------------------------------------------------------------------
+
+
+class TestNewsDiscuss:
+    def test_explore_news_article_creates_discussion_session(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        # Wait for news articles to load in right panel
+        page.wait_for_selector("[data-article-id]", timeout=15_000)
+        initial_count = page.locator("#session-list a").count()
+
+        # Click Explore on the first news card — scoped to avoid chat section buttons
+        page.locator("[data-article-id]").first.locator('button:has-text("Explore")').click()
+
+        # A news_discussion session is created asynchronously; sidebar refreshes
+        page.wait_for_function(
+            f"document.querySelectorAll('#session-list a').length > {initial_count}",
+            timeout=20_000,
+        )
+        assert page.locator("#session-list a").count() > initial_count

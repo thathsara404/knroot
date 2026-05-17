@@ -48,7 +48,10 @@
       "Bash(dir D:\\\\code-setup\\\\ai-agent\\\\backend\\\\static\\\\ *)",
       "Bash(git *)",
       "Bash(Get-ChildItem -Path \"D:\\\\code-setup\\\\ai-agent\" -Directory)",
-      "Bash(Select-Object Name)"
+      "Bash(Select-Object Name)",
+      "Bash(Select-String -Path \"D:\\\\code-setup\\\\ai-agent\\\\e2eresulttsttt.txt\" -Pattern \"passed|failed|error\")",
+      "Bash(Select-Object -Last 30)",
+      "Bash(Get-ChildItem -Path \"D:\\\\code-setup\\\\ai-agent\\\\backend\\\\templates\" -Recurse -Name)"
     ]
   }
 }

@@ -490,3 +490,179 @@ class TestSharePreview:
         has_dialog = page.locator('[role="dialog"]').count() >= 1
         has_preview_text = page.locator("text=Preview").count() >= 1
         assert has_dialog or has_preview_text
+
+
+# ---------------------------------------------------------------------------
+# Comment deletion
+# ---------------------------------------------------------------------------
+
+
+class TestCommentDeletion:
+    def test_delete_own_comment_removes_it(
+        self, page: Page, register_and_login: dict, second_api_user: dict
+    ):
+        uid = uuid.uuid4().hex[:6]
+        share = _api_create_share(second_api_user["session"], f"Comment del {uid}")
+        share_id = share["id"]
+
+        page.goto(f"{BASE_URL}/app")
+        _navigate_to_wall(page)
+        page.wait_for_selector(f'[data-share-id="{share_id}"]', timeout=_WALL_TIMEOUT)
+        card = page.locator(f'[data-share-id="{share_id}"]')
+
+        # Expand comments
+        card.locator('button:has-text("Comments")').click()
+        page.wait_for_timeout(400)
+
+        # Post a comment as the primary user
+        comment_uid = uuid.uuid4().hex[:6]
+        comment_text = f"Delete me {comment_uid}"
+        card.locator('input[placeholder="Add a comment…"]').fill(comment_text)
+        card.locator('button:has-text("Post")').click()
+        page.wait_for_timeout(1_200)
+        assert comment_text in card.inner_text()
+
+        # Delete button has opacity-0 (revealed on hover); force=True bypasses visibility
+        del_btn = card.locator('button[title="Delete comment"]')
+        del_btn.click(force=True)
+        page.wait_for_timeout(1_000)
+
+        assert comment_text not in card.inner_text()
+
+
+# ---------------------------------------------------------------------------
+# Unsave share
+# ---------------------------------------------------------------------------
+
+
+class TestUnsaveShare:
+    def test_unsave_removes_share_from_my_wall(
+        self, page: Page, register_and_login: dict, second_api_user: dict
+    ):
+        uid = uuid.uuid4().hex[:6]
+        share = _api_create_share(second_api_user["session"], f"Unsave test {uid}")
+        share_id = share["id"]
+
+        page.goto(f"{BASE_URL}/app")
+        _navigate_to_wall(page)
+        page.wait_for_selector(f'[data-share-id="{share_id}"]', timeout=_WALL_TIMEOUT)
+
+        # Save — wallSaveToWall auto-reloads #right-panel
+        page.locator(f'[data-share-id="{share_id}"]').locator('button:has-text("Save")').click()
+        page.wait_for_selector(
+            f'#right-panel [data-share-id="{share_id}"]', timeout=_WALL_TIMEOUT
+        )
+
+        # Unsave via the bookmark button in the private card
+        private_card = page.locator(f'#right-panel [data-share-id="{share_id}"]')
+        private_card.locator('[aria-label="Remove from my wall"]').click()
+        page.wait_for_timeout(1_500)
+
+        assert page.locator(f'#right-panel [data-share-id="{share_id}"]').count() == 0
+
+
+# ---------------------------------------------------------------------------
+# Friends-only share
+# ---------------------------------------------------------------------------
+
+
+class TestFriendsOnlyShare:
+    def test_friends_only_share_not_visible_on_public_wall(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        _send_chat_message(page, "Explain random forest ensembles in detail")
+        page.wait_for_timeout(600)
+
+        uid = uuid.uuid4().hex[:6]
+        full_desc = f"Friends only {uid}"
+        _open_share_modal(page)
+        page.locator('textarea[x-model="shareModal.description"]').fill(full_desc)
+        page.locator('select[x-model="shareModal.visibility"]').select_option(value="friends")
+        page.click('button:has-text("Share to Wall")', timeout=5_000)
+        page.wait_for_timeout(2_000)
+
+        # Public wall must not contain this share
+        _navigate_to_wall(page)
+        page.wait_for_timeout(1_000)
+        assert full_desc not in page.inner_text("#chat-messages")
+
+
+# ---------------------------------------------------------------------------
+# Follow request accept / reject (two-user browser flow)
+# ---------------------------------------------------------------------------
+
+
+def _browser_login_as(page: Page, username: str, password: str) -> None:
+    """Log out the current browser session and log in as a different user."""
+    page.request.post(f"{BASE_URL}/auth/logout")
+    page.goto(f"{BASE_URL}/login")
+    page.fill('#identifier', username)
+    page.fill('#password', password)
+    page.click('button[type="submit"]')
+    page.wait_for_url(f"{BASE_URL}/app", timeout=30_000)
+
+
+class TestFollowRequests:
+    def _setup_follow_request(
+        self,
+        page: Page,
+        second_api_user: dict,
+        label: str,
+    ) -> str:
+        """User B posts a share; User A follows them. Returns User A's ID."""
+        uid = uuid.uuid4().hex[:6]
+        share = _api_create_share(second_api_user["session"], f"{label} {uid}")
+        share_id = share["id"]
+
+        page.goto(f"{BASE_URL}/app")
+        _navigate_to_wall(page)
+        page.wait_for_selector(f'[data-share-id="{share_id}"]', timeout=_WALL_TIMEOUT)
+        card = page.locator(f'[data-share-id="{share_id}"]')
+
+        follow_btn = card.locator('button:has-text("Follow")')
+        if follow_btn.count() == 0 or not follow_btn.first.is_visible():
+            pytest.skip("Follow button unavailable for this share")
+
+        me_resp = page.request.get(f"{BASE_URL}/auth/me")
+        user_a_id = me_resp.json()["id"]
+
+        follow_btn.first.click()
+        page.wait_for_timeout(2_000)
+        page.wait_for_selector(
+            f'[data-share-id="{share_id}"] :text("Requested")', timeout=8_000
+        )
+        return user_a_id
+
+    def test_accept_follow_request(
+        self, page: Page, register_and_login: dict, second_api_user: dict
+    ):
+        user_a_id = self._setup_follow_request(page, second_api_user, "Follow accept")
+
+        _browser_login_as(
+            page, second_api_user["user"]["username"], second_api_user["user"]["password"]
+        )
+        page.click('button[title="Profile"]')
+        page.wait_for_selector('text=Follow Requests', timeout=10_000)
+
+        page.locator(f'#follow-req-{user_a_id} button:has-text("Accept")').click()
+        page.wait_for_timeout(1_000)
+
+        # wallRespondToFollowRequest removes the row immediately
+        assert page.locator(f'#follow-req-{user_a_id}').count() == 0
+
+    def test_reject_follow_request(
+        self, page: Page, register_and_login: dict, second_api_user: dict
+    ):
+        user_a_id = self._setup_follow_request(page, second_api_user, "Follow reject")
+
+        _browser_login_as(
+            page, second_api_user["user"]["username"], second_api_user["user"]["password"]
+        )
+        page.click('button[title="Profile"]')
+        page.wait_for_selector('text=Follow Requests', timeout=10_000)
+
+        page.locator(f'#follow-req-{user_a_id} button:has-text("Decline")').click()
+        page.wait_for_timeout(1_000)
+
+        assert page.locator(f'#follow-req-{user_a_id}').count() == 0

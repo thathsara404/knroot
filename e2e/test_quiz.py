@@ -57,9 +57,7 @@ class TestQuizGeneration:
         page.goto(f"{BASE_URL}/app")
         _load_quiz_inline(page, "What is the difference between RNN and LSTM?")
         quiz_area = page.locator("#chat-messages .knr-quiz-root")
-        option_buttons = quiz_area.locator("button").filter(
-            has_not_text="Submit Quiz"
-        ).filter(has_not_text="Retry")
+        option_buttons = quiz_area.locator("div.space-y-1\\.5 button")
         count = option_buttons.count()
         for i in range(0, min(count, 32), 4):
             try:
@@ -91,3 +89,37 @@ class TestQuizRetry:
             expect(
                 page.locator("#chat-messages").locator("text=Knowledge Check").first
             ).to_be_visible()
+
+
+class TestQuizRelearn:
+    def test_relearn_explanation_appears_for_wrong_answer(
+        self, page: Page, register_and_login: dict
+    ):
+        page.goto(f"{BASE_URL}/app")
+        _load_quiz_inline(page, "Explain gradient descent and optimisation in depth")
+        quiz_area = page.locator("#chat-messages .knr-quiz-root")
+
+        # Select the 4th option (index 3) for every question — all wrong answers
+        # Scope to div.space-y-1.5 to exclude hidden relearn/explore buttons from count
+        option_buttons = quiz_area.locator("div.space-y-1\\.5 button")
+        count = option_buttons.count()
+        for i in range(3, min(count, 32), 4):
+            try:
+                option_buttons.nth(i).click()
+                page.wait_for_timeout(150)
+            except Exception:
+                pass
+
+        submit_btn = quiz_area.locator('button:has-text("Submit Quiz")')
+        if submit_btn.is_visible() and not submit_btn.is_disabled():
+            submit_btn.click()
+            page.wait_for_selector(
+                "#chat-messages .knr-quiz-root >> text=Retry", timeout=15_000
+            )
+
+        # "Why was I wrong?" appears next to each incorrect answer after submission
+        page.wait_for_selector('button:has-text("Why was I wrong?")', timeout=8_000)
+        page.locator('button:has-text("Why was I wrong?")').first.click()
+        # Mock LLM returns relearn explanation; panel has bg-amber-50 class
+        page.wait_for_selector(".bg-amber-50", timeout=15_000)
+        expect(page.locator(".bg-amber-50").first).to_be_visible()

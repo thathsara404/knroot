@@ -7,7 +7,8 @@ MYPY  := $(VENV)/bin/mypy
 
 .PHONY: init \
         up-dev down-dev restart-dev logs-dev build-dev \
-        up-e2e down-e2e logs-e2e test-e2e-fresh \
+        up-e2e down-e2e logs-e2e restart-e2e test-e2e-fresh \
+        e2e-health e2e-logs-mock \
         up-infra backend \
         playwright-install test-unit test-int test-e2e test \
         lint shell-db shell-redis \
@@ -60,6 +61,19 @@ down-e2e:
 
 logs-e2e:
 	docker compose --profile e2e logs -f
+
+restart-e2e:
+	docker compose --profile e2e down
+	docker compose --profile e2e up --build -d
+
+e2e-health:
+	@echo "=== mock-llm status ==="
+	docker compose --profile e2e ps mock-llm
+	@echo "=== recent mock-llm requests ==="
+	docker compose --profile e2e logs mock-llm --tail 10
+
+e2e-logs-mock:
+	docker compose --profile e2e logs mock-llm --tail 50
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
